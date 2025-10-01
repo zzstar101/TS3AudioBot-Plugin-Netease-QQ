@@ -23,6 +23,7 @@ using TSLib;
 using TSLib.Helper;
 using static System.Net.Mime.MediaTypeNames;
 
+
 namespace MusicAPI
 {
     public class MusicAPI
@@ -263,7 +264,7 @@ namespace MusicAPI
                 var statusData = JObject.Parse(statusJsonGet);
                 var profile = statusData["data"]?["profile"];
 
-                if (profile == null || profile["userId"] == null || (long)profile["userId"] == 0)
+                if (profile == null || profile.Type == JTokenType.Null || profile["userId"] == null || (long)profile["userId"] == 0)
                 {
                     return null; // 未登录
                 }
@@ -852,34 +853,171 @@ namespace MusicAPI
             }
              return null;
         }
-        public async Task<String> GetmidFromId(string id)
-        {// 把id转为mid
-            string mid = "";
-            string res = await HttpGetWithCookiesAsync($"https://y.qq.com/n/ryqq/songDetail/{id}", 1);
-            // 开始处理
-            string[] afterequal = res.Split("__INITIAL_DATA__ =");
-            if (afterequal.Length != 2)
+        // 使用新的API将纯数字ID (songid) 转换为 mid
+        public async Task<string> GetMidFromIdApi(string song_id)
+        {
+            // 使用新的API将纯数字ID (songid) 转换为 mid，并直接请求json格式
+            string url = $"https://c.y.qq.com/v8/fcg-bin/fcg_play_single_song.fcg?songid={song_id}&tpl=yqq_song_detail&format=json&outCharset=utf-8&callback=getOneSongInfoCallback";
+            string json_get;
+            try
             {
-                throw new Exception("分隔__INITIAL_DATA__ =出现错误");
+                json_get = await HttpGetAsync(url);
             }
-            string[] beforescipt = afterequal[1].Split("</script>");
-            
-            if (beforescipt.Length == 1)
+            catch (Exception e)
             {
-                throw new Exception("分隔</script>出现错误");
+                throw new InvalidOperationException($"通过API转换songid失败: {e.Message}");
             }
-            string json_get = beforescipt[0];
-            // 解析json
+
+            if (string.IsNullOrEmpty(json_get))
+            {
+                throw new Exception("通过API转换songid时，未收到任何返回内容");
+            }
+
+            // --- 解析JSON并提取mid ---
             try
             {
                 var jsonObject = JObject.Parse(json_get);
-                mid = jsonObject["songList"][0]["mid"].ToString();
+                if (jsonObject["code"]?.Value<int>() == 0 && jsonObject["data"] != null && jsonObject["data"].HasValues)
+                {
+                    // 从 data 数组的第一个元素中提取 mid
+                    string mid = jsonObject["data"][0]["mid"]?.ToString();
+                    if (!string.IsNullOrEmpty(mid))
+                    {
+                        return mid;
+                    }
+                }
+                string errorMsg = jsonObject["message"]?.ToString() ?? "未知错误或数据为空";
+                throw new Exception($"API返回错误: {errorMsg}");
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                throw new Exception($"Json解析错误-{json_get}");
+                throw new Exception($"解析单曲API返回的JSON时出错: {ex.Message} - 原始返回: {json_get}");
             }
-            return mid;
+        }
+        // 专辑
+        public async Task<string> GetAlbumMidFromIdApi(string album_id)
+        {
+            // 使用新的API将纯数字专辑ID (albumid) 转换为 album_mid，并直接请求json格式
+            string url = $"https://c.y.qq.com/v8/fcg-bin/musicmall.fcg?albumid={album_id}&format=json&inCharset=utf-8&outCharset=utf-8&cmd=get_album_buy_page";
+            string json_get;
+            try
+            {
+                Console.WriteLine($"AAAAA{url}");
+                json_get = await HttpGetAsync(url);
+            }
+            catch (Exception e)
+            {
+                throw new InvalidOperationException($"通过API转换albumid失败: {e.Message}");
+            }
+
+            if (string.IsNullOrEmpty(json_get))
+            {
+                throw new Exception("通过API转换albumid时，未收到任何返回内容");
+            }
+
+            // --- 解析JSON并提取album_mid ---
+            try
+            {
+                var jsonObject = JObject.Parse(json_get);
+                if (jsonObject["code"]?.Value<int>() == 0 && jsonObject["data"] != null)
+                {
+                    string mid = jsonObject["data"]["album_mid"]?.ToString();
+                    if (!string.IsNullOrEmpty(mid))
+                    {
+                        return mid;
+                    }
+                }
+                string errorMsg = jsonObject["message"]?.ToString() ?? "未知错误";
+                throw new Exception($"API返回错误: {errorMsg}");
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"解析专辑API返回的JSON时出错: {ex.Message} - 原始返回: {json_get}");
+            }
+        }
+
+        public async Task<Tuple<string, string>> ResolveQQMusicLinkAndGetId(string url)
+        {
+            // 返回值: <ID, Type> Type可以是 "song", "album", "playlist"
+            using (var handler = new HttpClientHandler { AllowAutoRedirect = true })
+            using (var client = new HttpClient(handler))
+            {
+                client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36");
+
+                try
+                {
+                    HttpResponseMessage response = await client.GetAsync(url);
+                    response.EnsureSuccessStatusCode();
+
+                    Uri finalUri = response.RequestMessage.RequestUri;
+                    string finalUrl = finalUri.AbsoluteUri;
+                   
+
+                    // --- 核心修复与智能识别逻辑 ---
+
+                    // **情况1: 跳转到了中间分享页 (i.y.qq.com)**
+                    if (finalUrl.Contains("i.y.qq.com/n2/m/share/details/"))
+                    {
+                        var queryParams = finalUri.Query.TrimStart('?').Split('&');
+
+                        // **专辑中间页 (album.html)**
+                        if (finalUrl.Contains("album.html"))
+                        {
+                            string numericAlbumId = queryParams.FirstOrDefault(p => p.StartsWith("albumId="))?.Split('=')[1];
+                            if (!string.IsNullOrEmpty(numericAlbumId))
+                            {
+                                // 获取到数字ID后，立即调用新API进行转换
+                                string albumMid = await GetAlbumMidFromIdApi(numericAlbumId);
+                                return Tuple.Create(albumMid, "album");
+                            }
+                        }
+                        // **歌单中间页 (taoge.html)**
+                        else if (finalUrl.Contains("taoge.html"))
+                        {
+                            string playlistId = queryParams.FirstOrDefault(p => p.StartsWith("id="))?.Split('=')[1];
+                            if (!string.IsNullOrEmpty(playlistId))
+                            {
+                                return Tuple.Create(playlistId, "playlist");
+                            }
+                        }
+                        throw new Exception("在中间跳转页面中未能解析出ID");
+                    }
+                    // **情况2: 直接跳转到了最终的PC页面**
+                    else if (finalUrl.Contains("/n/ryqq/"))
+                    {
+                        // **核心修正：使用正则表达式精确匹配**
+                        // 匹配 /n/ryqq/ 后面跟着的 类型 和 ID
+                        string pattern = @"/n/ryqq/(songDetail|albumDetail|playlist)/([^/?#]+)";
+                        Match match = Regex.Match(finalUrl, pattern);
+
+                        if (match.Success)
+                        {
+                            string type_str = match.Groups[1].Value; // "songDetail", "albumDetail", "playlist"
+                            string id = match.Groups[2].Value;       // 捕获到的ID
+                            string type = "";
+
+                            if (type_str == "songDetail") type = "song";
+                            else if (type_str == "albumDetail") type = "album";
+                            else if (type_str == "playlist") type = "playlist";
+
+                            if (!string.IsNullOrEmpty(id) && !string.IsNullOrEmpty(type))
+                            {
+                                return Tuple.Create(id, type);
+                            }
+                        }
+                        throw new Exception("在最终跳转链接中未能解析出ID或类型");
+                    }
+                    // **兜底/错误处理**
+                    else
+                    {
+                        throw new Exception($"链接跳转到了未知的页面类型: '{finalUrl}'");
+                    }
+                }
+                catch (Exception e)
+                {
+                    throw new InvalidOperationException($"解析分享链接时出错: {e.Message}");
+                }
+            }
         }
         //-------------------------获取专辑--------------------------
         public async Task<string> SearchAlbum(string keyword, int type_music)
@@ -1312,6 +1450,9 @@ namespace MusicAPI
                 }
             }
         }
+
+
+
         public static async Task<string> HttpPostAsync(string url, string jsonData)
         {
             using (var client = new HttpClient())
@@ -1339,14 +1480,19 @@ namespace MusicAPI
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
             request.Method = "GET";
 
-            using (HttpWebResponse response = (HttpWebResponse)await request.GetResponseAsync())
-            using (Stream stream = response.GetResponseStream())
-            using (MemoryStream memoryStream = new MemoryStream())
-            {
-                await stream.CopyToAsync(memoryStream);
-                return memoryStream.ToArray();
-            }
-        }
+            // 关键：在这里添加 User-Agent，伪装成浏览器
+            request.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36";
+
+            // 确保 using 语句能够正确处理可能发生的异常
+           
+                using (HttpWebResponse response = (HttpWebResponse)await request.GetResponseAsync())
+                using (Stream stream = response.GetResponseStream())
+                using (MemoryStream memoryStream = new MemoryStream())
+                {
+                    await stream.CopyToAsync(memoryStream);
+                    return memoryStream.ToArray();
+                }
+           }
         //--------------------------其他功能性--------------------------
         public static string GetTimeStamp()
         {
