@@ -82,4 +82,4 @@ jobs:
         # 将预发布状态设置为 false
         prerelease: false
         # 附加的文件，即我们刚刚创建的 zip 压缩包
-        files: bilibili-Plugin-${{ env.VERSION }}.zip
+        files: TS3AudioBot-Plugin-Netease-QQ-${{ env.VERSION }}.zip
