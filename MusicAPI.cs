@@ -1,26 +1,28 @@
-﻿using System;
+﻿using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using System;
 using System.Collections.Generic;
-using System.Text;
-using System.Text.Json;
+using System.Collections.Specialized;
+using System.Data;
+using System.Diagnostics;
+using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
-using System.Threading.Tasks;
-using TSLib.Helper;
-using Newtonsoft.Json;
-using System.Diagnostics;
-using TS3AudioBot.Playlists;
-using System.Data;
-using System.Text.RegularExpressions;
-using TS3AudioBot;
-using Newtonsoft.Json.Linq;
-using System.Runtime.InteropServices.ComTypes;
-using System.Collections.Specialized;
-using System.Linq;
-using System.Globalization;
 using System.Reflection.Metadata;
+using System.Runtime.InteropServices.ComTypes;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using System.Xml.Linq;
+using TS3AudioBot;
+using TS3AudioBot.Playlists;
+using TSLib;
+using TSLib.Helper;
 using static System.Net.Mime.MediaTypeNames;
+
 
 namespace MusicAPI
 {
@@ -237,6 +239,228 @@ namespace MusicAPI
                 return null;
             }
         }
+
+        //--------------------------获取用户状态--------------------------
+        public async Task<UserInfo> GetNeteaseUserInfo()
+        {
+            // 检查是否有Cookie
+            if (string.IsNullOrEmpty(cookies[0]))
+            {
+                return null;
+            }
+
+            string statusJsonGet = "";
+            try
+            {
+                // --- 第一步: 调用 /login/status (已移除 timestamp) ---
+                string statusUrl = $"{addresss[0]}/login/status";
+                statusJsonGet = await HttpGetWithCookiesAsync(statusUrl, 0);
+
+                if (string.IsNullOrEmpty(statusJsonGet))
+                {
+                    return null; // API没返回任何东西，视为未登录
+                }
+
+                var statusData = JObject.Parse(statusJsonGet);
+                var profile = statusData["data"]?["profile"];
+
+                if (profile == null || profile.Type == JTokenType.Null || profile["userId"] == null || (long)profile["userId"] == 0)
+                {
+                    return null; // 未登录
+                }
+
+                // --- 第二步: 安全地获取用户信息和VIP详情 ---
+                string nickname = profile["nickname"]?.ToString() ?? "未知用户";
+                long userId = (long)profile["userId"];
+
+                // --- 第三步: 请求并安全地解析VIP信息 ---
+                string extraInfo = "非会员"; // 默认值为非会员
+                string vipInfoUrl = $"{addresss[0]}/vip/info";
+                string vipJsonGet = await HttpGetWithCookiesAsync(vipInfoUrl, 0);
+
+                if (!string.IsNullOrEmpty(vipJsonGet))
+                {
+                    var vipData = JObject.Parse(vipJsonGet);
+                    if (vipData["code"]?.Value<int>() == 200 && vipData["data"] != null)
+                    {
+                        var vipDetails = vipData["data"];
+                        long currentTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                        string tempVipInfo = "";
+
+                        // 判断层级：黑胶 SVIP > 黑胶 VIP > 音乐包
+                        if (vipDetails["redplus"]?["expireTime"]?.Value<long>() > currentTime)
+                        {
+                            long expireTime = (long)vipDetails["redplus"]["expireTime"];
+                            DateTime expireDateTime = DateTimeOffset.FromUnixTimeMilliseconds(expireTime).LocalDateTime;
+                            tempVipInfo = $"黑胶SVIP Lv.{vipDetails["redVipLevel"]} (到期: {expireDateTime:yyyy-MM-dd})";
+                        }
+                        else if (vipDetails["associator"]?["expireTime"]?.Value<long>() > currentTime)
+                        {
+                            long expireTime = (long)vipDetails["associator"]["expireTime"];
+                            DateTime expireDateTime = DateTimeOffset.FromUnixTimeMilliseconds(expireTime).LocalDateTime;
+                            tempVipInfo = $"黑胶VIP Lv.{vipDetails["associator"]["vipLevel"]} (到期: {expireDateTime:yyyy-MM-dd})";
+                        }
+                        else if (vipDetails["musicPackage"]?["expireTime"]?.Value<long>() > currentTime)
+                        {
+                            long expireTime = (long)vipDetails["musicPackage"]["expireTime"];
+                            DateTime expireDateTime = DateTimeOffset.FromUnixTimeMilliseconds(expireTime).LocalDateTime;
+                            tempVipInfo = $"畅听会员 (到期: {expireDateTime:yyyy-MM-dd})";
+                        }
+
+                        // 如果有任何有效的会员信息，再判断是否为年费
+                        if (!string.IsNullOrEmpty(tempVipInfo))
+                        {
+                            // 根据您的要求，只在是年费时显示“年费”
+                            if (vipDetails["redVipAnnualCount"]?.Value<int>() == 1)
+                            {
+                                extraInfo = "年费" + tempVipInfo;
+                            }
+                            else
+                            {
+                                extraInfo = tempVipInfo;
+                            }
+                        }
+                    }
+                }
+
+                return new UserInfo
+                {
+                    Name = nickname,
+                    Url = $"https://music.163.com/#/user/home?id={userId}",
+                    Extra = extraInfo
+                };
+            }
+            catch (Exception e)
+            {
+                throw new InvalidOperationException($"解析网易云用户信息时出错: {e.Message} - 返回内容: {statusJsonGet}", e);
+            }
+        }
+        public async Task<UserInfo> GetQQUserInfo()
+        {
+            // 检查是否有QQ音乐的Cookie
+            if (string.IsNullOrEmpty(cookies[1]))
+            {
+                return null;
+            }
+
+            string json_get = "";
+            try
+            {
+                // 从已保存的Cookie字符串中提取uin(QQ号)
+                string uin = ExtractValueFromCookie(cookies[1], "uin");
+                if (string.IsNullOrEmpty(uin))
+                {
+                    return null;
+                }
+
+                // 使用正确的API地址和uin参数构建URL
+                string status_url = $"{addresss[1]}/user/detail?id={uin}";
+
+                // 发送带Cookie的HTTP请求
+                json_get = await HttpGetWithCookiesAsync(status_url, 1);
+                if (string.IsNullOrEmpty(json_get))
+                {
+                    return null;
+                }
+
+                var json = JObject.Parse(json_get);
+                if (json["code"]?.Value<int>() == 0 && json["data"]?["creator"] != null)
+                {
+                    var creator = json["data"]["creator"];
+                    string nickname = creator["nick"]?.ToString() ?? "未知用户";
+                    string encrypt_uin = creator["encrypt_uin"]?.ToString();
+
+                    // --- 最终版会员层级判断逻辑 ---
+                    string extraInfo = "非会员"; // 默认值为非会员
+
+                    var userInfoUI = creator["userInfoUI"];
+                    var iconList = userInfoUI?["iconlist"] as JArray;
+
+                    // 定义会员等级，数字越大，等级越高
+                    int membershipRank = 0; // 0: 非会员, 1: 音乐包, 2: 豪华绿钻, 3: 超级会员
+                    string membershipLevel = "";
+                    bool isAnnual = false;
+
+                    // 1. 最高优先级：判断是否为超级会员 (根据您的发现)
+                    string lightColor = userInfoUI?["nickname"]?["lightColor"]?.ToString();
+                    if (!string.IsNullOrEmpty(lightColor))
+                    {
+                        membershipRank = 3;
+                    }
+
+                    // 2. 遍历iconlist，寻找会员标识
+                    if (iconList != null && iconList.Count > 0)
+                    {
+                        var regex = new Regex(@"(n?)(svip|sui)(\d+)\.png");
+
+                        foreach (var iconToken in iconList)
+                        {
+                            string srcUrl = iconToken["srcUrl"]?.ToString();
+                            if (string.IsNullOrEmpty(srcUrl)) continue;
+
+                            Match match = regex.Match(srcUrl);
+                            if (match.Success)
+                            {
+                                string type = match.Groups[2].Value;
+                                string level = match.Groups[3].Value;
+                                bool currentIsAnnual = (match.Groups[1].Value == "n");
+
+                                // 如果已经是超级会员，只需更新等级和年费信息
+                                if (membershipRank == 3 && type == "svip")
+                                {
+                                    membershipLevel = level;
+                                    isAnnual = currentIsAnnual;
+                                }
+                                // 判断豪华绿钻
+                                else if (type == "svip" && membershipRank < 2)
+                                {
+                                    membershipRank = 2;
+                                    membershipLevel = level;
+                                    isAnnual = currentIsAnnual;
+                                }
+                                // 判断音乐包
+                                else if (type == "sui" && membershipRank < 1)
+                                {
+                                    membershipRank = 1;
+                                    membershipLevel = level;
+                                    isAnnual = currentIsAnnual;
+                                }
+                            }
+                        }
+                    }
+
+                    // 3. 根据最终确定的最高等级来格式化输出
+                    if (membershipRank > 0)
+                    {
+                        string membershipName = "未知会员";
+                        if (membershipRank == 3) membershipName = "超级会员";
+                        else if (membershipRank == 2) membershipName = "豪华绿钻";
+                        else if (membershipRank == 1) membershipName = "音乐包";
+
+                        string annualPrefix = isAnnual ? "年费" : "";
+                        extraInfo = $"{annualPrefix}{membershipName} Lv.{membershipLevel}";
+                    }
+
+                    return new UserInfo
+                    {
+                        Name = nickname,
+                        Url = $"https://y.qq.com/portal/profile.html?uin={encrypt_uin}",
+                        Extra = extraInfo
+                    };
+                }
+
+                return null;
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"[Netease QQ Plugin Critical Error] GetQQUserInfo failed: {e.Message} - Response: {json_get}");
+                return null;
+            }
+        }
+
+        // 添加这两个方法以便在主插件文件中获取API地址
+        public string GetNeteaseApiServerUrl() => addresss[0];
+        public string GetQQApiServerUrl() => addresss[1];
 
         //--------------------------获取歌曲--------------------------  
         public async Task<string> GetSongUrl(string Song_id, int type_music, string mediamid = "")
@@ -629,34 +853,288 @@ namespace MusicAPI
             }
              return null;
         }
-        public async Task<String> GetmidFromId(string id)
-        {// 把id转为mid
-            string mid = "";
-            string res = await HttpGetWithCookiesAsync($"https://y.qq.com/n/ryqq/songDetail/{id}", 1);
-            // 开始处理
-            string[] afterequal = res.Split("__INITIAL_DATA__ =");
-            if (afterequal.Length != 2)
+        // 使用新的API将纯数字ID (songid) 转换为 mid
+        public async Task<string> GetMidFromIdApi(string song_id)
+        {
+            // 使用新的API将纯数字ID (songid) 转换为 mid，并直接请求json格式
+            string url = $"https://c.y.qq.com/v8/fcg-bin/fcg_play_single_song.fcg?songid={song_id}&tpl=yqq_song_detail&format=json&outCharset=utf-8&callback=getOneSongInfoCallback";
+            string json_get;
+            try
             {
-                throw new Exception("分隔__INITIAL_DATA__ =出现错误");
+                json_get = await HttpGetAsync(url);
             }
-            string[] beforescipt = afterequal[1].Split("</script>");
-            
-            if (beforescipt.Length == 1)
+            catch (Exception e)
             {
-                throw new Exception("分隔</script>出现错误");
+                throw new InvalidOperationException($"通过API转换songid失败: {e.Message}");
             }
-            string json_get = beforescipt[0];
-            // 解析json
+
+            if (string.IsNullOrEmpty(json_get))
+            {
+                throw new Exception("通过API转换songid时，未收到任何返回内容");
+            }
+
+            // --- 解析JSON并提取mid ---
             try
             {
                 var jsonObject = JObject.Parse(json_get);
-                mid = jsonObject["songList"][0]["mid"].ToString();
+                if (jsonObject["code"]?.Value<int>() == 0 && jsonObject["data"] != null && jsonObject["data"].HasValues)
+                {
+                    // 从 data 数组的第一个元素中提取 mid
+                    string mid = jsonObject["data"][0]["mid"]?.ToString();
+                    if (!string.IsNullOrEmpty(mid))
+                    {
+                        return mid;
+                    }
+                }
+                string errorMsg = jsonObject["message"]?.ToString() ?? "未知错误或数据为空";
+                throw new Exception($"API返回错误: {errorMsg}");
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                throw new Exception($"Json解析错误-{json_get}");
+                throw new Exception($"解析单曲API返回的JSON时出错: {ex.Message} - 原始返回: {json_get}");
             }
-            return mid;
+        }
+        // 专辑
+        public async Task<string> GetAlbumMidFromIdApi(string album_id)
+        {
+            // 使用新的API将纯数字专辑ID (albumid) 转换为 album_mid，并直接请求json格式
+            string url = $"https://c.y.qq.com/v8/fcg-bin/musicmall.fcg?albumid={album_id}&format=json&inCharset=utf-8&outCharset=utf-8&cmd=get_album_buy_page";
+            string json_get;
+            try
+            {
+                Console.WriteLine($"AAAAA{url}");
+                json_get = await HttpGetAsync(url);
+            }
+            catch (Exception e)
+            {
+                throw new InvalidOperationException($"通过API转换albumid失败: {e.Message}");
+            }
+
+            if (string.IsNullOrEmpty(json_get))
+            {
+                throw new Exception("通过API转换albumid时，未收到任何返回内容");
+            }
+
+            // --- 解析JSON并提取album_mid ---
+            try
+            {
+                var jsonObject = JObject.Parse(json_get);
+                if (jsonObject["code"]?.Value<int>() == 0 && jsonObject["data"] != null)
+                {
+                    string mid = jsonObject["data"]["album_mid"]?.ToString();
+                    if (!string.IsNullOrEmpty(mid))
+                    {
+                        return mid;
+                    }
+                }
+                string errorMsg = jsonObject["message"]?.ToString() ?? "未知错误";
+                throw new Exception($"API返回错误: {errorMsg}");
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"解析专辑API返回的JSON时出错: {ex.Message} - 原始返回: {json_get}");
+            }
+        }
+
+        public async Task<Tuple<string, string>> ResolveQQMusicLinkAndGetId(string url)
+        {
+            // 返回值: <ID, Type> Type可以是 "song", "album", "playlist"
+            using (var handler = new HttpClientHandler { AllowAutoRedirect = true })
+            using (var client = new HttpClient(handler))
+            {
+                client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36");
+
+                try
+                {
+                    HttpResponseMessage response = await client.GetAsync(url);
+                    response.EnsureSuccessStatusCode();
+
+                    Uri finalUri = response.RequestMessage.RequestUri;
+                    string finalUrl = finalUri.AbsoluteUri;
+                   
+
+                    // --- 核心修复与智能识别逻辑 ---
+
+                    // **情况1: 跳转到了中间分享页 (i.y.qq.com)**
+                    if (finalUrl.Contains("i.y.qq.com/n2/m/share/details/"))
+                    {
+                        var queryParams = finalUri.Query.TrimStart('?').Split('&');
+
+                        // **专辑中间页 (album.html)**
+                        if (finalUrl.Contains("album.html"))
+                        {
+                            string numericAlbumId = queryParams.FirstOrDefault(p => p.StartsWith("albumId="))?.Split('=')[1];
+                            if (!string.IsNullOrEmpty(numericAlbumId))
+                            {
+                                // 获取到数字ID后，立即调用新API进行转换
+                                string albumMid = await GetAlbumMidFromIdApi(numericAlbumId);
+                                return Tuple.Create(albumMid, "album");
+                            }
+                        }
+                        // **歌单中间页 (taoge.html)**
+                        else if (finalUrl.Contains("taoge.html"))
+                        {
+                            string playlistId = queryParams.FirstOrDefault(p => p.StartsWith("id="))?.Split('=')[1];
+                            if (!string.IsNullOrEmpty(playlistId))
+                            {
+                                return Tuple.Create(playlistId, "playlist");
+                            }
+                        }
+                        throw new Exception("在中间跳转页面中未能解析出ID");
+                    }
+                    // **情况2: 直接跳转到了最终的PC页面**
+                    else if (finalUrl.Contains("/n/ryqq/"))
+                    {
+                        // **核心修正：使用正则表达式精确匹配**
+                        // 匹配 /n/ryqq/ 后面跟着的 类型 和 ID
+                        string pattern = @"/n/ryqq/(songDetail|albumDetail|playlist)/([^/?#]+)";
+                        Match match = Regex.Match(finalUrl, pattern);
+
+                        if (match.Success)
+                        {
+                            string type_str = match.Groups[1].Value; // "songDetail", "albumDetail", "playlist"
+                            string id = match.Groups[2].Value;       // 捕获到的ID
+                            string type = "";
+
+                            if (type_str == "songDetail") type = "song";
+                            else if (type_str == "albumDetail") type = "album";
+                            else if (type_str == "playlist") type = "playlist";
+
+                            if (!string.IsNullOrEmpty(id) && !string.IsNullOrEmpty(type))
+                            {
+                                return Tuple.Create(id, type);
+                            }
+                        }
+                        throw new Exception("在最终跳转链接中未能解析出ID或类型");
+                    }
+                    // **兜底/错误处理**
+                    else
+                    {
+                        throw new Exception($"链接跳转到了未知的页面类型: '{finalUrl}'");
+                    }
+                }
+                catch (Exception e)
+                {
+                    throw new InvalidOperationException($"解析分享链接时出错: {e.Message}");
+                }
+            }
+        }
+        //-------------------------获取专辑--------------------------
+        public async Task<string> SearchAlbum(string keyword, int type_music)
+        {
+            // 根据关键词搜索专辑，返回第一个匹配的专辑ID
+            if (type_music == 0) // 网易云音乐
+            {
+                string url = $"{addresss[0]}/search?keywords={keyword}&type=10&limit=1";
+                if (cookies[type_music] != "")
+                {
+                    url += $"&cookie={cookies[type_music]}";
+                }
+                try
+                {
+                    string json_get = await HttpGetAsync(url);
+                    var jsonObject = JObject.Parse(json_get);
+                    if (jsonObject["code"]?.Value<int>() == 200 && jsonObject["result"]?["albums"] != null)
+                    {
+                        return jsonObject["result"]["albums"][0]["id"].ToString();
+                    }
+                    return null;
+                }
+                catch (Exception e)
+                {
+                    throw new InvalidOperationException($"搜索网易云专辑失败: {e.Message}");
+                }
+            }
+            else if (type_music == 1) // QQ音乐
+            {   
+
+                string url = $"{addresss[1]}/search?key={keyword}&t=8&pageSize=1";
+                
+                try
+                {
+                    string json_get = await HttpGetWithCookiesAsync(url, 1);
+                    var jsonObject = JObject.Parse(json_get);
+                    if (jsonObject["data"]?["list"] != null)
+                    {
+                        return jsonObject["data"]["list"][0]["albumMID"].ToString();
+                    }
+                    return null;
+                }
+                catch (Exception e)
+                {
+                    throw new InvalidOperationException($"搜索QQ音乐专辑失败: {e.Message}");
+                }
+            }
+            return null;
+        }
+
+        public async Task<Tuple<string, List<Dictionary<string, string>>>> GetAlbumDetail(string album_id, int type_music)
+        {
+            // 获取专辑详情，返回一个包含专辑名和歌曲列表的元组
+            List<Dictionary<string, string>> songList = new List<Dictionary<string, string>>();
+            string albumName = "未知专辑";
+
+            if (type_music == 0) // 网易云音乐
+            {
+                string url = $"{addresss[0]}/album?id={album_id}";
+                try
+                {
+                    string json_get = await HttpGetAsync(url);
+                    var jsonObject = JObject.Parse(json_get);
+                    if (jsonObject["code"]?.Value<int>() == 200)
+                    {
+                        albumName = jsonObject["album"]?["name"]?.ToString() ?? albumName;
+                        var songs = jsonObject["songs"] as JArray;
+                        if (songs != null)
+                        {
+                            foreach (var song in songs)
+                            {
+                                songList.Add(new Dictionary<string, string> {
+                            { "id", song["id"].ToString() },
+                            { "name", song["name"].ToString() },
+                            { "author", song["ar"][0]["name"].ToString() }
+                        });
+                            }
+                        }
+                    }
+                    return Tuple.Create(albumName, songList);
+                }
+                catch (Exception e)
+                {
+                    throw new InvalidOperationException($"获取网易云专辑详情失败: {e.Message}");
+                }
+            }
+            else if (type_music == 1) // QQ音乐
+            {
+                string url = $"{addresss[1]}/album/songs?albummid={album_id}";
+                try
+                {
+                    string json_get = await HttpGetAsync(url);
+                    var jsonObject = JObject.Parse(json_get);
+                    if (jsonObject["data"] != null)
+                    {
+                        albumName = jsonObject["data"]?["list"][0]?["album"]?["name"]?.ToString() ?? albumName;
+                        var songs = jsonObject["data"]?["list"] as JArray;
+                        if (songs != null)
+                        {
+                            foreach (var song in songs)
+                            {
+                                songList.Add(new Dictionary<string, string> {
+                            { "id", song["mid"].ToString() },
+                            { "name", song["name"].ToString() },
+                            { "author", song["singer"][0]["name"].ToString() }
+                        });
+                            }
+                        }
+                    }
+                    return Tuple.Create(albumName, songList);
+                }
+                catch (Exception e)
+                {
+                    throw new InvalidOperationException($"获取QQ音乐专辑详情失败: {e.Message}");
+                }
+            }
+            return null;
         }
         //-------------------------获取歌单--------------------------
         public async Task<long> SearchPlayList(string PlayList_name, int type_music)
@@ -818,10 +1296,10 @@ namespace MusicAPI
             }
             return null;
         }
-        //-------------------------FM--------------------------
+        //-------------------------网易 FM--------------------------
         public async Task<string> GetFMSongId()
         {
-            string url = $"{addresss[0]}/personal/fm/mode?mode=DEFAULT&timestamp={GetTimeStamp()}";
+            string url = $"{addresss[0]}/personal_fm/mode?mode=DEFAULT&timestamp={GetTimeStamp()}";
             if (cookies[0] != "")
             {
                 url += $"&cookie={cookies[0]}";
@@ -859,7 +1337,41 @@ namespace MusicAPI
             return null ;
            
         }
+        //--------------------------QQ FM--------------------------
+        public async Task<List<Dictionary<string, string>>> GetQQFMSongs(string radioId)
+        {
+            // 根据电台ID获取QQ电台的歌曲列表
+            List<Dictionary<string, string>> songList = new List<Dictionary<string, string>>();
+            string url = $"{addresss[1]}/radio?id={radioId}";
 
+            try
+            {
+                string json_get = await HttpGetWithCookiesAsync(url, 1);
+                if (string.IsNullOrEmpty(json_get))
+                {
+                    return songList; // 返回空列表
+                }
+
+                var jsonObject = JObject.Parse(json_get);
+                if (jsonObject["data"]?["tracks"] is JArray songs)
+                {
+                    foreach (var song in songs)
+                    {
+                        // 从JSON中提取我们需要的歌曲信息
+                        songList.Add(new Dictionary<string, string> {
+                    { "id", song["mid"].ToString() },
+                    { "name", song["name"].ToString() },
+                    { "author", song["singer"][0]["name"].ToString() }
+                });
+                    }
+                }
+                return songList;
+            }
+            catch (Exception e)
+            {
+                throw new InvalidOperationException($"获取QQ电台歌曲失败: {e.Message}");
+            }
+        }
         //--------------------------HTTP相关--------------------------
         public static async Task<string> HttpGetAsync(string url)
         {
@@ -938,6 +1450,9 @@ namespace MusicAPI
                 }
             }
         }
+
+
+
         public static async Task<string> HttpPostAsync(string url, string jsonData)
         {
             using (var client = new HttpClient())
@@ -965,14 +1480,19 @@ namespace MusicAPI
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
             request.Method = "GET";
 
-            using (HttpWebResponse response = (HttpWebResponse)await request.GetResponseAsync())
-            using (Stream stream = response.GetResponseStream())
-            using (MemoryStream memoryStream = new MemoryStream())
-            {
-                await stream.CopyToAsync(memoryStream);
-                return memoryStream.ToArray();
-            }
-        }
+            // 关键：在这里添加 User-Agent，伪装成浏览器
+            request.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36";
+
+            // 确保 using 语句能够正确处理可能发生的异常
+           
+                using (HttpWebResponse response = (HttpWebResponse)await request.GetResponseAsync())
+                using (Stream stream = response.GetResponseStream())
+                using (MemoryStream memoryStream = new MemoryStream())
+                {
+                    await stream.CopyToAsync(memoryStream);
+                    return memoryStream.ToArray();
+                }
+           }
         //--------------------------其他功能性--------------------------
         public static string GetTimeStamp()
         {
@@ -993,6 +1513,12 @@ namespace MusicAPI
                 return null;
             }
         }
+    }
+    public class UserInfo
+    {
+        public string Name { get; set; }
+        public string Url { get; set; }
+        public string Extra { get; set; }
     }
 }
 
