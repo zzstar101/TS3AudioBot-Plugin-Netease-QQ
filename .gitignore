@@ -361,3 +361,11 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Not part of this plugin project
+Dockerfile
+test_architecture_detection.sh
+
+# Local review artifacts
+__*.txt
+__*.cs

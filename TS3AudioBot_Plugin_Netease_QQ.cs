@@ -1153,48 +1153,12 @@ namespace TS3AudioBot_Plugin_Netease_QQ
                         {
                             Console.WriteLine($"[DEBUG] 头像设置失败: {ex.Message}");
                             await Task.Delay(1000);
-                            if (i == 2 && !avatarSetSuccess) 
-                            {
-                                Console.WriteLine("[DEBUG] 所有头像设置尝试失败，fallback到公屏发送歌曲封面和详情");
-                                
-                                // 发送详细的歌曲信息到公屏
-                                await ts3Client.SendChannelMessage("🎵 歌曲播放信息");
-                                await ts3Client.SendChannelMessage($"🎤 歌曲名称: {songname}");
-                                await ts3Client.SendChannelMessage($"👤 歌手: {authorname}");
-                                await ts3Client.SendChannelMessage($"🎶 来源: {comefrom}");
-                                await ts3Client.SendChannelMessage($"🔗 歌曲链接: {native_url}");
-                                await ts3Client.SendChannelMessage($"🖼️  封面URL: {picurl}");
-                                
-                                // 保存封面到文件
-                                try
-                                {
-                                    string coverFilePath = $"/app/data/cover_{DateTime.Now:yyyyMMddHHmmss}.jpg";
-                                    using (FileStream fs = new FileStream(coverFilePath, FileMode.Create))
-                                    {
-                                        await fs.WriteAsync(imageBytes, 0, imageBytes.Length);
-                                    }
-                                    Console.WriteLine($"[DEBUG] 歌曲封面已保存到: {coverFilePath}");
-                                    await ts3Client.SendChannelMessage($"💾 封面已保存到服务器文件: {coverFilePath}");
-                                }
-                                catch (Exception fileEx)
-                                {
-                                    Console.WriteLine($"[DEBUG] 保存封面文件失败: {fileEx.Message}");
-                                }
-                            }
                         }
                     }
                     
-                    // 如果所有尝试都失败且没有获取到图片数据，发送基本信息
-                    if (!avatarSetSuccess && imageBytes == null)
+                    if (!avatarSetSuccess)
                     {
-                        Console.WriteLine("[DEBUG] 所有头像设置尝试失败且没有图片数据，fallback到公屏发送基本信息");
-                        
-                        // 发送基本的歌曲信息到公屏
-                        await ts3Client.SendChannelMessage("🎵 歌曲播放信息");
-                        await ts3Client.SendChannelMessage($"🎤 歌曲名称: {songname}");
-                        await ts3Client.SendChannelMessage($"👤 歌手: {authorname}");
-                        await ts3Client.SendChannelMessage($"🎶 来源: {comefrom}");
-                        await ts3Client.SendChannelMessage($"🔗 歌曲链接: {native_url}");
+                        Console.WriteLine("[DEBUG] 头像设置已跳过：本次播放不修改机器人头像");
                     }
                 }
             }
