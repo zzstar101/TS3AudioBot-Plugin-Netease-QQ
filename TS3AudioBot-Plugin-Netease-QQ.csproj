@@ -5,6 +5,12 @@
 		<Version>1.4</Version>
 		<RootNamespace>TS3AudioBot_Plugin_Netease_QQ</RootNamespace>
 		<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+		<!-- Disable implicit compilation items to avoid duplicates -->
+		<EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+		<!-- Disable implicit embedded resources -->
+		<EnableDefaultEmbeddedResourceItems>false</EnableDefaultEmbeddedResourceItems>
+		<!-- Disable implicit none items -->
+		<EnableDefaultNoneItems>false</EnableDefaultNoneItems>
 </PropertyGroup>
 	
 	<PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
@@ -34,7 +40,6 @@
     </PackageReference>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="SixLabors.ImageSharp" Version="2.1.11" />
-
   </ItemGroup>
 
   <ItemGroup>
@@ -48,7 +53,20 @@
       <HintPath>lib\TSLib.dll</HintPath>
     </Reference>
   </ItemGroup>
-    <PropertyGroup>
-		<PublishSingleFile>true</PublishSingleFile>
-	</PropertyGroup>
+
+  <!-- Explicitly include only our plugin files -->
+  <ItemGroup>
+    <Compile Include="TS3AudioBot_Plugin_Netease_QQ.cs" />
+    <Compile Include="MusicAPI.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="FodyWeavers.xml" />
+    <None Include="README.md" />
+    <None Include="LICENSE" />
+  </ItemGroup>
+
+  <PropertyGroup>
+	<PublishSingleFile>true</PublishSingleFile>
+  </PropertyGroup>
 </Project>

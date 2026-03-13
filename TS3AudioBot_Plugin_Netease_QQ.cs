@@ -1,4 +1,4 @@
-﻿using IniParser;
+using IniParser;
 using IniParser.Model;
 using MusicAPI;
 using SixLabors.ImageSharp;
@@ -77,9 +77,13 @@ namespace TS3AudioBot_Plugin_Netease_QQ
         // 是否阻塞
         private bool isObstruct = false;
         // 当前播放的歌词
-        private List<Dictionary<TimeSpan, string>> Lyric = new List<Dictionary<TimeSpan, string>>();
+        private List<Dictionary<TimeSpan, Tuple<string, string>>> Lyric = new List<Dictionary<TimeSpan, Tuple<string, string>>>();
         // 上一个歌词
         private string lyric_before;
+        // 当前公屏歌词
+        private string currentPublicLyric = "";
+        // 公屏歌词状态
+        private bool isPublicLyricsEnabled = false;
         // 歌词线程
         private static readonly int lyric_refresh_time = 400;
         private System.Timers.Timer Lyric_thread;
@@ -118,6 +122,151 @@ namespace TS3AudioBot_Plugin_Netease_QQ
                 Console.WriteLine($"[Netease QQ Plugin Critical Error] An unexpected error occurred while force-loading ImageSharp: {ex.ToString()}");
             }
         }
+
+        /// <summary>
+        /// 动态设置机器人头像
+        /// </summary>
+        /// <param name="ts3Client">Ts3Client实例</param>
+        /// <param name="imageBytes">图片字节数组</param>
+        /// <returns>是否设置成功</returns>
+        private async Task<bool> SetAvatarAsync(Ts3Client ts3Client, byte[] imageBytes)
+        {
+            if (ts3Client == null || imageBytes == null || imageBytes.Length == 0)
+            {
+                Console.WriteLine("[DEBUG] SetAvatarAsync: 参数无效");
+                return false;
+            }
+
+            try
+            {
+                // 获取Ts3Client类型
+                Type ts3ClientType = ts3Client.GetType();
+                Console.WriteLine($"[DEBUG] SetAvatarAsync: Ts3Client类型: {ts3ClientType.FullName}");
+
+                // 尝试查找UploadAvatar方法（优先）
+                MethodInfo uploadAvatarMethod = ts3ClientType.GetMethod("UploadAvatar", new[] { typeof(Stream) });
+                if (uploadAvatarMethod != null)
+                {
+                    Console.WriteLine("[DEBUG] SetAvatarAsync: 找到UploadAvatar方法");
+                    using (MemoryStream stream = new MemoryStream(imageBytes))
+                    {
+                        // 检查方法是否是异步的
+                        if (uploadAvatarMethod.ReturnType == typeof(Task))
+                        {
+                            // 异步方法
+                            await (Task)uploadAvatarMethod.Invoke(ts3Client, new object[] { stream });
+                        }
+                        else
+                        {
+                            // 同步方法
+                            uploadAvatarMethod.Invoke(ts3Client, new object[] { stream });
+                        }
+                    }
+                    Console.WriteLine("[DEBUG] SetAvatarAsync: 头像设置成功（使用UploadAvatar）");
+                    return true;
+                }
+
+                // 尝试查找SetAvatar或ChangeAvatar方法
+                MethodInfo setAvatarMethod = ts3ClientType.GetMethod("SetAvatar", new[] { typeof(byte[]) })
+                    ?? ts3ClientType.GetMethod("ChangeAvatar", new[] { typeof(byte[]) });
+
+                if (setAvatarMethod != null)
+                {
+                    Console.WriteLine($"[DEBUG] SetAvatarAsync: 找到头像设置方法: {setAvatarMethod.Name}");
+
+                    // 检查方法是否是异步的
+                    if (setAvatarMethod.ReturnType == typeof(Task))
+                    {
+                        // 异步方法
+                        await (Task)setAvatarMethod.Invoke(ts3Client, new object[] { imageBytes });
+                    }
+                    else
+                    {
+                        // 同步方法
+                        setAvatarMethod.Invoke(ts3Client, new object[] { imageBytes });
+                    }
+
+                    Console.WriteLine("[DEBUG] SetAvatarAsync: 头像设置成功");
+                    return true;
+                }
+
+                Console.WriteLine("[DEBUG] SetAvatarAsync: 未找到UploadAvatar、SetAvatar或ChangeAvatar方法");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DEBUG] SetAvatarAsync: 头像设置失败: {ex.Message}");
+                Console.WriteLine($"[DEBUG] SetAvatarAsync: 异常详情: {ex.ToString()}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 直接使用UploadAvatar方法设置头像（如果存在）
+        /// </summary>
+        /// <param name="ts3Client">Ts3Client实例</param>
+        /// <param name="stream">图片流</param>
+        /// <returns>是否设置成功</returns>
+        private async Task<bool> UploadAvatarAsync(Ts3Client ts3Client, Stream stream)
+        {
+            if (ts3Client == null || stream == null)
+            {
+                Console.WriteLine("[DEBUG] UploadAvatarAsync: 参数无效");
+                return false;
+            }
+
+            try
+            {
+                // 获取Ts3Client类型
+                Type ts3ClientType = ts3Client.GetType();
+                Console.WriteLine($"[DEBUG] UploadAvatarAsync: Ts3Client类型: {ts3ClientType.FullName}");
+
+                // 查找UploadAvatar方法
+                MethodInfo uploadAvatarMethod = ts3ClientType.GetMethod("UploadAvatar", new[] { typeof(Stream) });
+                if (uploadAvatarMethod == null)
+                {
+                    Console.WriteLine("[DEBUG] UploadAvatarAsync: 未找到UploadAvatar方法");
+                    return false;
+                }
+
+                Console.WriteLine("[DEBUG] UploadAvatarAsync: 找到UploadAvatar方法");
+
+                // 检查方法是否是异步的
+                if (uploadAvatarMethod.ReturnType == typeof(Task))
+                {
+                    // 异步方法
+                    await (Task)uploadAvatarMethod.Invoke(ts3Client, new object[] { stream });
+                }
+                else
+                {
+                    // 同步方法
+                    uploadAvatarMethod.Invoke(ts3Client, new object[] { stream });
+                }
+
+                Console.WriteLine("[DEBUG] UploadAvatarAsync: 头像设置成功");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DEBUG] UploadAvatarAsync: 头像设置失败: {ex.Message}");
+                Console.WriteLine($"[DEBUG] UploadAvatarAsync: 异常详情: {ex.ToString()}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 从Stream中读取字节数组
+        /// </summary>
+        /// <param name="stream">输入流</param>
+        /// <returns>字节数组</returns>
+        private byte[] StreamToBytes(Stream stream)
+        {
+            using (MemoryStream memoryStream = new MemoryStream())
+            {
+                stream.CopyTo(memoryStream);
+                return memoryStream.ToArray();
+            }
+        }
         //--------------------------获取audio bot数据--------------------------
         public Netease_QQ_plugin(PlayManager playManager, Ts3Client ts3Client, Player player, Connection connection, ConfBot confBot, DedicatedTaskScheduler scheduler)
         {
@@ -126,7 +275,9 @@ namespace TS3AudioBot_Plugin_Netease_QQ
             this.player = player;
             this.connection = connection;
             this.botname_connect = confBot.Connect.Name;
+            this.botname_connect_before = confBot.Connect.Name; // Initialize with original bot name
             this.scheduler = scheduler;
+            Console.WriteLine($"[DEBUG] 构造函数初始化: botname_connect = '{this.botname_connect}', botname_connect_before = '{this.botname_connect_before}'");
         }
         //--------------------------初始化--------------------------
         public async void Initialize()
@@ -262,22 +413,30 @@ namespace TS3AudioBot_Plugin_Netease_QQ
                         {// 获取歌词
                             Lyric.Clear();
                             lyric_before = "";
+                            currentPublicLyric = "";
                             lyric_id_now = string_id;
                             await GetLyricNow();
                         }
                         // 开始刷新歌词
                         string lyric_now = "";
-                        TimeSpan now = (TimeSpan)player.Position;
-                        TimeSpan length = (TimeSpan)player.Length;
+                        string main_lyric_now = "";
+                        string trans_lyric_now = "";
+                        
+                        // 安全获取 player.Position 和 player.Length，处理可能为 null 的情况
+                        TimeSpan now = player.Position.GetValueOrDefault();
+                        TimeSpan length = player.Length.GetValueOrDefault();
+                        
                         for (int i = 0; i < Lyric.Count; i++)
                         {
                             if (now > Lyric[i].First().Key)
                             {
-                                lyric_now = Lyric[i][Lyric[i].First().Key];
+                                var lyricTuple = Lyric[i][Lyric[i].First().Key];
+                                main_lyric_now = lyricTuple.Item1;
+                                trans_lyric_now = lyricTuple.Item2;
                                 long p_now, p_length;
-                                p_now = (long)((TimeSpan)player.Position).TotalSeconds;
-                                p_length = (long)((TimeSpan)player.Length).TotalSeconds;
-                                lyric_now += $" [{p_now}/{p_length}s]";
+                                p_now = (long)player.Position.GetValueOrDefault().TotalSeconds;
+                                p_length = (long)player.Length.GetValueOrDefault().TotalSeconds;
+                                lyric_now = $"{main_lyric_now} [{p_now}/{p_length}s]";
                             }
                             else
                             {
@@ -289,6 +448,29 @@ namespace TS3AudioBot_Plugin_Netease_QQ
                             await ts3c.ChangeDescription(lyric_now);
                         }
                         lyric_before = lyric_now;
+                        
+                        // 公屏歌词处理
+                        if (isPublicLyricsEnabled && !string.IsNullOrEmpty(main_lyric_now))
+                        {
+                            string publicLyric = "";
+                            if (!string.IsNullOrEmpty(trans_lyric_now))
+                            {
+                                // 双语歌词格式
+                                publicLyric = $"{main_lyric_now}\n{trans_lyric_now}";
+                            }
+                            else
+                            {
+                                // 单语歌词格式
+                                publicLyric = main_lyric_now;
+                            }
+                            
+                            // 避免重复发送相同的歌词
+                            if (publicLyric != currentPublicLyric)
+                            {
+                                await ts3c.SendChannelMessage(publicLyric);
+                                currentPublicLyric = publicLyric;
+                            }
+                        }
                     });
                 }
             }
@@ -438,7 +620,7 @@ namespace TS3AudioBot_Plugin_Netease_QQ
                 int.TryParse(string_music_type, out music_type);
                 try
                 {
-                    List<Dictionary<TimeSpan, string>> res = await musicapi.GetSongLyric(string_id, music_type);
+                    List<Dictionary<TimeSpan, Tuple<string, string>>> res = await musicapi.GetSongLyric(string_id, music_type);
                     Lyric = res.ToList();
                 }
                 catch (Exception e)
@@ -465,7 +647,7 @@ namespace TS3AudioBot_Plugin_Netease_QQ
                         if (play_index + 1 >= PlayList.Count)
                         {
                             // 列表末尾
-                            _ = MainCommands.CommandBotName(ts3Client, botname_connect);
+                            await ts3Client.ChangeName(botname_connect);
                             await ts3Client.ChangeDescription("");
                             isPlayingNeteaseOrQQ = false;
                             await ts3Client.SendChannelMessage("歌单已经到底了");
@@ -512,7 +694,7 @@ namespace TS3AudioBot_Plugin_Netease_QQ
                         PlayList.Remove(PlayList[play_index]);
                         if (PlayList.Count == 0)
                         {
-                            _ = MainCommands.CommandBotName(ts3Client, botname_connect);
+                            await ts3Client.ChangeName(botname_connect);
                             await ts3Client.ChangeDescription("");
                             isPlayingNeteaseOrQQ = false;
                             await ts3Client.SendChannelMessage("歌单已经到底了");
@@ -534,7 +716,7 @@ namespace TS3AudioBot_Plugin_Netease_QQ
                         PlayList.Remove(PlayList[play_index]);
                         if (PlayList.Count == 0)
                         {
-                            _ = MainCommands.CommandBotName(ts3Client, botname_connect);
+                            await ts3Client.ChangeName(botname_connect);
                             await ts3Client.ChangeDescription("");
                             isPlayingNeteaseOrQQ = false;
                             await ts3Client.SendChannelMessage("歌单已经到底了");
@@ -800,8 +982,14 @@ namespace TS3AudioBot_Plugin_Netease_QQ
             {
                 try
                 {// 获取url
-                    string mediamid = detail["mediamid"];
-                    songurl = await musicapi.GetSongUrl(Songid, music_type, mediamid);
+                    if (detail != null && detail.TryGetValue("mediamid", out string mediamid))
+                    {
+                        songurl = await musicapi.GetSongUrl(Songid, music_type, mediamid);
+                    }
+                    else
+                    {
+                        await ts3Client.SendChannelMessage($"获取歌曲媒体ID失败");
+                    }
                 }
                 catch (Exception e)
                 {
@@ -825,34 +1013,7 @@ namespace TS3AudioBot_Plugin_Netease_QQ
                     detail.TryGetValue("name", out songname);
                     detail.TryGetValue("author", out authorname);
                     detail.TryGetValue("picurl", out picurl);
-                    // 加入音乐url
-                    try
-                    {
-                        // 使用ts3bot的play播放音乐
-                        native_url = "";
-                        if (music_type == 0)
-                        {
-                            native_url = $"https://music.163.com/#/song?id={Songid}";
-                        }
-                        else if (music_type == 1)
-                        {
-                            native_url = $"https://y.qq.com/n/ryqq/songDetail/{Songid}";
-                        }
-                        string fullName = songname + (string.IsNullOrEmpty(authorname) ? "" : $" - {authorname}");
-                        var ar = new AudioResource(native_url, fullName, "media")
-                          .Add("PlayUri", picurl)
-                          .Add("source", "NeteaseQQPlugin");
-                        // Console.WriteLine($"cover:{picurl}");
-                        await playManager.Play(invokerData, new MediaPlayResource(songurl, ar, await musicapi.HttpGetImage(picurl), false));
-                        isPlayingNeteaseOrQQ = true;    
-                        // await MainCommands.CommandPlay(playManager, invokerData, songurl);
-                    }
-                    catch (Exception)
-                    {
-                        await ts3Client.SendChannelMessage($"歌曲URL无法播放-若为QQ音乐建议重启API: {songurl}");
-                        return;
-                    }
-                    // 修改机器人描述和头像
+                    // 修改机器人描述和头像 - 先计算modename和新名字
                     if (play_type == 0)
                     {
                         if (play_mode == 1)
@@ -884,24 +1045,69 @@ namespace TS3AudioBot_Plugin_Netease_QQ
                     {
                         modename = "[FM]";
                     }
-                    string comefrom = music_type == 0 ? "网易云音乐" : music_type == 1 ? "QQ音乐" : "未知";                    
-                    newname = $" {songname}-{authorname}{modename}";
+                    string comefrom = music_type == 0 ? "网易云音乐" : music_type == 1 ? "QQ音乐" : "未知";
+                    
+                    // 先计算并设置新名字
+                    Console.WriteLine($"[DEBUG] 歌曲信息: songname='{songname}', authorname='{authorname}', modename='{modename}'");
+                    newname = $"{songname}-{authorname}{modename}";
+                    Console.WriteLine($"[DEBUG] 构造新名字: '{newname}', 去除前导空格");
                     if (newname.Length >= 21)
-                    {// 确保名字21以下
+                    {
+                        // 确保名字21以下
                         newname = newname.Substring(0, 21) + "...";
+                        Console.WriteLine($"[DEBUG] 名字过长，截断后: '{newname}'");
                     }
                     try
                     {
+                        Console.WriteLine($"[DEBUG] 当前botname_connect_before: '{botname_connect_before}', 新名字: '{newname}', 是否需要改名: {newname != botname_connect_before}");
                         if (newname != botname_connect_before)
-                        {// 相同则不换
-                            await MainCommands.CommandBotName(ts3Client, newname);
+                        {
+                            // 相同则不换
+                            Console.WriteLine($"[DEBUG] 开始调用ChangeName方法，新名字: '{newname}'");
+                            await ts3Client.ChangeName(newname);
+                            Console.WriteLine($"[DEBUG] ChangeName调用成功");
                             botname_connect_before = newname;
-                        
-                    }
+                            Console.WriteLine($"[DEBUG] botname_connect_before已更新为: '{botname_connect_before}'");
+                        }
+                        else
+                        {
+                            Console.WriteLine($"[DEBUG] 名字相同，无需修改");
+                        }
                     }
                     catch (Exception e)
                     {
+                        Console.WriteLine($"[DEBUG] ChangeName调用失败: {e.Message}");
+                        Console.WriteLine($"[DEBUG] 异常详细信息: {e.ToString()}");
                         throw new Exception($"在更换机器人名字出现错误，目标名字: {newname}，错误: {e.Message}");
+                    }
+                    
+                    // 然后播放音乐
+                    try
+                    {
+                        // 使用ts3bot的play播放音乐
+                        native_url = "";
+                        if (music_type == 0)
+                        {
+                            native_url = $"https://music.163.com/#/song?id={Songid}";
+                        }
+                        else if (music_type == 1)
+                        {
+                            native_url = $"https://y.qq.com/n/ryqq/songDetail/{Songid}";
+                        }
+                        string fullName = songname + (string.IsNullOrEmpty(authorname) ? "" : $" - {authorname}");
+                        var ar = new AudioResource(native_url, fullName, "media")
+                          .Add("PlayUri", picurl)
+                          .Add("source", "NeteaseQQPlugin");
+                        // Console.WriteLine($"cover:{picurl}");
+                        await playManager.Play(invokerData, new MediaPlayResource(songurl, ar, await musicapi.HttpGetImage(picurl), false));
+                        isPlayingNeteaseOrQQ = true;    
+                        // await MainCommands.CommandPlay(playManager, invokerData, songurl);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[DEBUG] 播放音乐失败: {ex.Message}");
+                        await ts3Client.SendChannelMessage($"歌曲URL无法播放-若为QQ音乐建议重启API: {songurl}");
+                        return;
                     }
 
                     if (play_type == 0)
@@ -914,19 +1120,81 @@ namespace TS3AudioBot_Plugin_Netease_QQ
                         // 通知
                         await ts3Client.SendChannelMessage($"播放歌曲{songname} - {authorname}（{comefrom}FM）");
                     }
+                    // 设置机器人头像
+                    bool avatarSetSuccess = false;
+                    byte[] imageBytes = null;
+                    
                     for (int i = 0; i < 3; i++)
                     {
                         try
                         {
-                            await MainCommands.CommandBotAvatarSet(ts3Client, picurl);
-                            break;
+                            Console.WriteLine($"[DEBUG] 尝试设置歌曲头像，URL: {picurl}");
+                            imageBytes = await musicapi.HttpGetImage(picurl);
+                            if (imageBytes != null && imageBytes.Length > 0)
+                            {
+                                // 使用反射方法设置头像，确保兼容性
+                                avatarSetSuccess = await SetAvatarAsync(ts3Client, imageBytes);
+                                if (avatarSetSuccess)
+                                {
+                                    Console.WriteLine("[DEBUG] 歌曲头像设置成功");
+                                    break;
+                                }
+                                else
+                                {
+                                    Console.WriteLine("[DEBUG] SetAvatarAsync返回失败");
+                                }
+                            }
+                            else
+                            {
+                                Console.WriteLine("[DEBUG] 获取歌曲图片失败，图片字节数组为空");
+                            }
                         }
-                        catch (Exception)
+                        catch (Exception ex)
                         {
-                            await MainCommands.CommandBotAvatarSet(ts3Client, "");
+                            Console.WriteLine($"[DEBUG] 头像设置失败: {ex.Message}");
                             await Task.Delay(1000);
-                            if (i == 2) { await ts3Client.SendChannelMessage($"机器人头像更换失败,url: {picurl}"); }
+                            if (i == 2 && !avatarSetSuccess) 
+                            {
+                                Console.WriteLine("[DEBUG] 所有头像设置尝试失败，fallback到公屏发送歌曲封面和详情");
+                                
+                                // 发送详细的歌曲信息到公屏
+                                await ts3Client.SendChannelMessage("🎵 歌曲播放信息");
+                                await ts3Client.SendChannelMessage($"🎤 歌曲名称: {songname}");
+                                await ts3Client.SendChannelMessage($"👤 歌手: {authorname}");
+                                await ts3Client.SendChannelMessage($"🎶 来源: {comefrom}");
+                                await ts3Client.SendChannelMessage($"🔗 歌曲链接: {native_url}");
+                                await ts3Client.SendChannelMessage($"🖼️  封面URL: {picurl}");
+                                
+                                // 保存封面到文件
+                                try
+                                {
+                                    string coverFilePath = $"/app/data/cover_{DateTime.Now:yyyyMMddHHmmss}.jpg";
+                                    using (FileStream fs = new FileStream(coverFilePath, FileMode.Create))
+                                    {
+                                        await fs.WriteAsync(imageBytes, 0, imageBytes.Length);
+                                    }
+                                    Console.WriteLine($"[DEBUG] 歌曲封面已保存到: {coverFilePath}");
+                                    await ts3Client.SendChannelMessage($"💾 封面已保存到服务器文件: {coverFilePath}");
+                                }
+                                catch (Exception fileEx)
+                                {
+                                    Console.WriteLine($"[DEBUG] 保存封面文件失败: {fileEx.Message}");
+                                }
+                            }
                         }
+                    }
+                    
+                    // 如果所有尝试都失败且没有获取到图片数据，发送基本信息
+                    if (!avatarSetSuccess && imageBytes == null)
+                    {
+                        Console.WriteLine("[DEBUG] 所有头像设置尝试失败且没有图片数据，fallback到公屏发送基本信息");
+                        
+                        // 发送基本的歌曲信息到公屏
+                        await ts3Client.SendChannelMessage("🎵 歌曲播放信息");
+                        await ts3Client.SendChannelMessage($"🎤 歌曲名称: {songname}");
+                        await ts3Client.SendChannelMessage($"👤 歌手: {authorname}");
+                        await ts3Client.SendChannelMessage($"🎶 来源: {comefrom}");
+                        await ts3Client.SendChannelMessage($"🔗 歌曲链接: {native_url}");
                     }
                 }
             }
@@ -1456,6 +1724,34 @@ namespace TS3AudioBot_Plugin_Netease_QQ
             // 展示第page页
             await PlayListShow(page);
         }
+        [Command("wq json")]
+        public Task<string> CommandQueueJson()
+        {
+            var snapshotItems = PlayList.Select((item, index) =>
+            {
+                item.TryGetValue("id", out string id);
+                item.TryGetValue("music_type", out string musicType);
+                item.TryGetValue("name", out string name);
+                item.TryGetValue("author", out string author);
+                return new
+                {
+                    index = index + 1,
+                    id = id ?? string.Empty,
+                    music_type = musicType ?? "0",
+                    name = name ?? string.Empty,
+                    author = author ?? string.Empty
+                };
+            }).ToList();
+
+            var payload = new
+            {
+                playbackIndex = play_index,
+                songCount = PlayList.Count,
+                items = snapshotItems
+            };
+
+            return Task.FromResult(JsonSerializer.Serialize(payload));
+        }
         [Command("wq go")]       
         public async Task CommandGo(Ts3Client ts3Client, int? argments = null)
         {
@@ -1693,15 +1989,44 @@ namespace TS3AudioBot_Plugin_Netease_QQ
             if (isLyric)
             {
                 isLyric = false;
+                isPublicLyricsEnabled = false;
                 await ts3Client.SendChannelMessage("歌词已关闭");
                 await ts3Client.ChangeDescription("");
                 StartLyric(false);
+                currentPublicLyric = "";
             }
             else
             {
                 StartLyric(true);
-                await ts3Client.SendChannelMessage("歌词已开启");
+                await ts3Client.SendChannelMessage("歌词已开启，仅显示在机器人描述中");
                 isLyric = true;
+                isPublicLyricsEnabled = false;
+                currentPublicLyric = "";
+            }
+        }
+        
+        [Command("wyy lyric")]
+        public async Task CommandWyyLyric(Ts3Client ts3Client)
+        {
+            // 网易云公屏歌词开关
+            isPublicLyricsEnabled = !isPublicLyricsEnabled;
+            if (isPublicLyricsEnabled)
+            {
+                if (!isLyric)
+                {
+                    StartLyric(true);
+                    isLyric = true;
+                    await ts3Client.SendChannelMessage("歌词已开启，将显示在公屏上");
+                }
+                else
+                {
+                    await ts3Client.SendChannelMessage("公屏歌词已开启");
+                }
+            }
+            else
+            {
+                await ts3Client.SendChannelMessage("公屏歌词已关闭，仅显示在机器人描述中");
+                currentPublicLyric = "";
             }
         }
 
@@ -1721,7 +2046,54 @@ namespace TS3AudioBot_Plugin_Netease_QQ
                 // 把二维码发送ts3bot
                 Stream img_stream = await musicapi.GetNeteaseLoginImage();
                 await ts3Client.SendChannelMessage(musicapi.netease_login_key);
-                await ts3Client.UploadAvatar(img_stream);
+                
+                // 设置登录二维码为机器人头像
+                Console.WriteLine("[DEBUG] 尝试设置网易云登录二维码头像");
+                // 将Stream转换为byte[]
+                byte[] imageBytes = StreamToBytes(img_stream);
+                bool avatarSetSuccess = await SetAvatarAsync(ts3Client, imageBytes);
+                
+                // 如果头像设置失败，fallback到保存二维码到文件并发送详细信息
+                if (!avatarSetSuccess)
+                {
+                    Console.WriteLine("[DEBUG] 网易云登录二维码头像设置失败，fallback到保存二维码到文件");
+                    
+                    try
+                    {
+                        // 保存二维码到文件
+                        string qrCodeFilePath = $"/app/data/qr_code_netease_{DateTime.Now:yyyyMMddHHmmss}.png";
+                        using (FileStream fs = new FileStream(qrCodeFilePath, FileMode.Create))
+                        {
+                            await fs.WriteAsync(imageBytes, 0, imageBytes.Length);
+                        }
+                        
+                        Console.WriteLine($"[DEBUG] 二维码已保存到: {qrCodeFilePath}");
+                        
+                        // 发送详细的登录信息
+                        await ts3Client.SendChannelMessage("🎵 网易云音乐登录指引");
+                        await ts3Client.SendChannelMessage($"📱 请使用网易云音乐APP扫描二维码登录");
+                        await ts3Client.SendChannelMessage($"💡 二维码已保存到服务器文件: {qrCodeFilePath}");
+                        await ts3Client.SendChannelMessage($"🔑 登录密钥: {musicapi.netease_login_key}");
+                        await ts3Client.SendChannelMessage($"⏰ 二维码有效期为2分钟");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[DEBUG] 保存二维码文件失败: {ex.Message}");
+                        await ts3Client.SendChannelMessage("❌ 二维码保存失败");
+                        await ts3Client.SendChannelMessage($"🔑 登录密钥: {musicapi.netease_login_key}");
+                        await ts3Client.SendChannelMessage($"📝 请联系管理员获取帮助");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("[DEBUG] 网易云登录二维码头像设置成功");
+                }
+                // 关闭流以释放资源
+                img_stream.Close();
+                
+                await ts3Client.SendChannelMessage("二维码获取成功，请使用网易云音乐APP扫码登录");
+                await ts3Client.SendChannelMessage("登录密钥: " + musicapi.netease_login_key);
+                
                 int trytime = 60;
                 for (int i = 0; i < trytime; i++)
                 {
@@ -1729,35 +2101,53 @@ namespace TS3AudioBot_Plugin_Netease_QQ
                     Dictionary<string, string> res = await musicapi.CheckNeteaseLoginStatus();
                     if (res["code"] == "803")
                     {
-                        _ = ts3Client.SendChannelMessage("登录成功");
+                        await ts3Client.SendChannelMessage("登录成功");
                         // 保存cookies
                         string cookies = "\"" + res["cookie"] + "\"";
                         musicapi.SetCookies(res["cookie"], 0);
                         plugin_config["netease"]["cookies"] = cookies;
                         plugin_config_parser.WriteFile(iniPath, plugin_config);
-
                         break;
                     }
                     else if (res["code"] == "800")
                     {
-                        _ = ts3Client.SendChannelMessage(res["message"]);
+                        await ts3Client.SendChannelMessage(res["message"]);
                         break;
                     }
                     else
                     {
-                        _ = ts3Client.SendChannelMessage(res["message"]);
+                        await ts3Client.SendChannelMessage(res["message"]);
                     }
                     if (res["code"] != "803" && i == trytime - 1)
                     {
-                        _ = ts3Client.SendChannelMessage("登录超时");
+                        await ts3Client.SendChannelMessage("登录超时");
                         break;
                     }
                 }
+                
+                // 登录完成后，重置机器人描述和头像
+                try
+                {
+                    await MainCommands.CommandBotDescriptionSet(ts3Client, "");
+                    // 恢复默认头像（如果需要）
+                    // await ts3Client.DeleteAvatar();
+                }
+                catch { /* 忽略恢复默认状态失败的情况 */ }
+                
                 isObstruct = false;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                throw;
+                await ts3Client.SendChannelMessage($"登录失败: {ex.Message}");
+                // 发生错误时，重置机器人描述
+                try
+                {
+                    await MainCommands.CommandBotDescriptionSet(ts3Client, "");
+                    // 恢复默认头像（如果需要）
+                    // await ts3Client.DeleteAvatar();
+                }
+                catch { /* 忽略恢复默认状态失败的情况 */ }
+                isObstruct = false;
             }
             finally
             {
@@ -1815,9 +2205,12 @@ namespace TS3AudioBot_Plugin_Netease_QQ
                     Dictionary<string, string> res = await musicapi.SearchSong(songname, 0);
                     string songname_get;
                     string author_get;
-                    songname_get = res["name"];
-                    author_get = res["author"];
-                    long.TryParse(res["id"], out id);
+                    if (!res.TryGetValue("name", out songname_get) || !res.TryGetValue("author", out author_get) || !res.TryGetValue("id", out string id_str))
+                    {
+                        await ts3Client.SendChannelMessage($"未能搜索到歌曲: {songname}");
+                        return;
+                    }
+                    long.TryParse(id_str, out id);
                     await ts3Client.SendChannelMessage($"搜索歌\"{songname}\"得到\"{songname_get}-{author_get}\", id\"{id}\"");
                     await PlayListAdd(id.ToString(), 0, play_index + 1);
                 }
@@ -1847,9 +2240,12 @@ namespace TS3AudioBot_Plugin_Netease_QQ
                 Dictionary<string, string> res = await musicapi.SearchSong(songname, 0);
                 string songname_get;
                 string author_get;
-                songname_get = res["name"];
-                author_get = res["author"];
-                long.TryParse(res["id"], out id);
+                if (!res.TryGetValue("name", out songname_get) || !res.TryGetValue("author", out author_get) || !res.TryGetValue("id", out string id_str))
+                {
+                    await ts3Client.SendChannelMessage($"未能搜索到歌曲: {songname}");
+                    return;
+                }
+                long.TryParse(id_str, out id);
                 await ts3Client.SendChannelMessage($"搜索歌\"{songname}\"得到\"{songname_get}-{author_get}\", id\"{id}\"");
                 await PlayListAdd(id.ToString(), 0);
             }
@@ -2032,7 +2428,51 @@ namespace TS3AudioBot_Plugin_Netease_QQ
                     return;
                 }
                 if (img_stream == null) { await ts3Client.SendChannelMessage("null"); return; }
-                await ts3Client.UploadAvatar(img_stream);
+                
+                // 设置登录二维码为机器人头像
+                Console.WriteLine("[DEBUG] 尝试设置QQ音乐登录二维码头像");
+                // 将Stream转换为byte[]
+                byte[] imageBytes = StreamToBytes(img_stream);
+                bool avatarSetSuccess = await SetAvatarAsync(ts3Client, imageBytes);
+                
+                // 如果头像设置失败，fallback到保存二维码到文件并发送详细信息
+                if (!avatarSetSuccess)
+                {
+                    Console.WriteLine("[DEBUG] QQ音乐登录二维码头像设置失败，fallback到保存二维码到文件");
+                    
+                    try
+                    {
+                        // 保存二维码到文件
+                        string qrCodeFilePath = $"/app/data/qr_code_qq_{DateTime.Now:yyyyMMddHHmmss}.png";
+                        using (FileStream fs = new FileStream(qrCodeFilePath, FileMode.Create))
+                        {
+                            await fs.WriteAsync(imageBytes, 0, imageBytes.Length);
+                        }
+                        
+                        Console.WriteLine($"[DEBUG] QQ二维码已保存到: {qrCodeFilePath}");
+                        
+                        // 发送详细的登录信息
+                        await ts3Client.SendChannelMessage("🎵 QQ音乐登录指引");
+                        await ts3Client.SendChannelMessage($"📱 请使用QQ音乐APP扫描二维码登录");
+                        await ts3Client.SendChannelMessage($"💡 二维码已保存到服务器文件: {qrCodeFilePath}");
+                        await ts3Client.SendChannelMessage($"⏰ 二维码有效期为2分钟");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[DEBUG] 保存QQ二维码文件失败: {ex.Message}");
+                        await ts3Client.SendChannelMessage("❌ QQ二维码保存失败");
+                        await ts3Client.SendChannelMessage($"📝 请联系管理员获取帮助");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("[DEBUG] QQ音乐登录二维码头像设置成功");
+                }
+                // 关闭流以释放资源
+                img_stream.Close();
+                
+                await ts3Client.SendChannelMessage("二维码获取成功，请使用QQ音乐APP扫码登录");
+                
                 // 开始等待扫码
                 int trytime = 15;
                 int i = 0;
@@ -2059,11 +2499,29 @@ namespace TS3AudioBot_Plugin_Netease_QQ
                     }
                 }
                 await ts3Client.SendChannelMessage("结束登录");
+                
+                // 登录完成后，重置机器人描述
+                try
+                {
+                    await MainCommands.CommandBotDescriptionSet(ts3Client, "");
+                    // 恢复默认头像（如果需要）
+                    // await ts3Client.DeleteAvatar();
+                }
+                catch { /* 忽略恢复默认状态失败的情况 */ }
+                
                 isObstruct = false;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-
+                await ts3Client.SendChannelMessage($"登录失败: {ex.Message}");
+                // 发生错误时，重置机器人描述
+                try
+                {
+                    await MainCommands.CommandBotDescriptionSet(ts3Client, "");
+                    // 恢复默认头像（如果需要）
+                    // await ts3Client.DeleteAvatar();
+                }
+                catch { /* 忽略恢复默认状态失败的情况 */ }
                 throw;
             }
             finally
