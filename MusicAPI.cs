@@ -38,9 +38,6 @@ namespace MusicAPI
         // 报错信息文本
         private static string error_http_error = "HTTP请求发生错误";
         private static string error_json_error = "JSON解析错误";
-        private static string error_api_error = "API返回错误";
-        private static string error_no_data = "未获取到数据";
-        private static string error_invalid_response = "无效的API响应";
         
         // 重试参数
         private static int maxtry = 3;
