@@ -93,6 +93,23 @@ namespace TS3AudioBot_Plugin_Netease_QQ
         // 等待频道无人时间
         private readonly static int max_wait_alone = 30;
         private int waiting_time = 0;
+
+        // 暂停/恢复稳定性相关状态
+        private const double unexpectedStopNearEndThresholdSec = 12d;
+        private static readonly TimeSpan neteaseUrlRefreshThreshold = TimeSpan.FromMinutes(45);
+        private static readonly TimeSpan qqUrlRefreshThreshold = TimeSpan.FromMinutes(30);
+        private static readonly TimeSpan unexpectedStopRecoveryWindow = TimeSpan.FromSeconds(90);
+
+        private string currentSongId = "";
+        private int currentMusicType = -1;
+        private string currentMediaMid = "";
+        private string currentSongUrl = "";
+        private DateTime currentSongUrlFetchedAtUtc = DateTime.MinValue;
+        private DateTime lastResumeAtUtc = DateTime.MinValue;
+        private DateTime lastSeekAtUtc = DateTime.MinValue;
+        private double lastResumeTargetSec = 0;
+        private bool hasRecoveredCurrentSong = false;
+
         private void ForceLoadImageSharpDependency()
         {
             try
@@ -279,6 +296,107 @@ namespace TS3AudioBot_Plugin_Netease_QQ
             this.scheduler = scheduler;
             Console.WriteLine($"[DEBUG] 构造函数初始化: botname_connect = '{this.botname_connect}', botname_connect_before = '{this.botname_connect_before}'");
         }
+
+        private void ResetPlaybackRecoveryState()
+        {
+            currentSongId = "";
+            currentMusicType = -1;
+            currentMediaMid = "";
+            currentSongUrl = "";
+            currentSongUrlFetchedAtUtc = DateTime.MinValue;
+            lastResumeAtUtc = DateTime.MinValue;
+            lastSeekAtUtc = DateTime.MinValue;
+            lastResumeTargetSec = 0;
+            hasRecoveredCurrentSong = false;
+        }
+
+        private TimeSpan GetUrlRefreshThreshold(int musicType)
+        {
+            return musicType == 1 ? qqUrlRefreshThreshold : neteaseUrlRefreshThreshold;
+        }
+
+        private double GetCurrentPlayerPositionSec()
+        {
+            return Math.Max(0, player.Position.GetValueOrDefault().TotalSeconds);
+        }
+
+        private double GetCurrentPlayerLengthSec()
+        {
+            return Math.Max(0, player.Length.GetValueOrDefault().TotalSeconds);
+        }
+
+        private bool IsCurrentSongUrlStale()
+        {
+            if (string.IsNullOrEmpty(currentSongId))
+            {
+                return false;
+            }
+            if (string.IsNullOrEmpty(currentSongUrl) || currentSongUrlFetchedAtUtc == DateTime.MinValue || currentMusicType < 0)
+            {
+                return true;
+            }
+
+            return DateTime.UtcNow - currentSongUrlFetchedAtUtc >= GetUrlRefreshThreshold(currentMusicType);
+        }
+
+        private bool IsLikelyNaturalStop()
+        {
+            var durationSec = GetCurrentPlayerLengthSec();
+            if (durationSec <= 0)
+            {
+                return false;
+            }
+
+            var positionSec = GetCurrentPlayerPositionSec();
+            return positionSec >= Math.Max(0, durationSec - unexpectedStopNearEndThresholdSec);
+        }
+
+        private bool ShouldRecoverCurrentSongOnStop()
+        {
+            if (hasRecoveredCurrentSong)
+            {
+                return false;
+            }
+            if (PlayList.Count == 0 || play_index < 0 || play_index >= PlayList.Count)
+            {
+                return false;
+            }
+
+            bool inResumeWindow = lastResumeAtUtc != DateTime.MinValue && DateTime.UtcNow - lastResumeAtUtc <= unexpectedStopRecoveryWindow;
+            bool inSeekWindow = lastSeekAtUtc != DateTime.MinValue && DateTime.UtcNow - lastSeekAtUtc <= unexpectedStopRecoveryWindow;
+
+            return inResumeWindow || inSeekWindow || IsCurrentSongUrlStale();
+        }
+
+        private async Task<bool> TryRecoverCurrentSongAsync()
+        {
+            if (!ShouldRecoverCurrentSongOnStop())
+            {
+                return false;
+            }
+
+            long resumeSec = (long)Math.Max(0, Math.Floor(Math.Max(lastResumeTargetSec, GetCurrentPlayerPositionSec())));
+            hasRecoveredCurrentSong = true;
+
+            Console.WriteLine($"[NeteaseQQPlugin] 尝试恢复当前歌曲: id={currentSongId}, type={currentMusicType}, seek={resumeSec}s");
+
+            try
+            {
+                await PlayListPlayNow();
+                if (resumeSec > 0 && playManager.IsPlaying)
+                {
+                    await player.Seek(TimeSpan.FromSeconds(resumeSec));
+                    lastSeekAtUtc = DateTime.UtcNow;
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[NeteaseQQPlugin] 恢复当前歌曲失败: {ex.Message}");
+                return false;
+            }
+        }
+
         //--------------------------初始化--------------------------
         public async void Initialize()
         {
@@ -665,7 +783,7 @@ namespace TS3AudioBot_Plugin_Netease_QQ
                             await PlayListPlayNow();
                         }
                     }
-                    else if (play_mode == 3)
+                            if (play_type == 0 && (play_mode < 1 || play_mode > 4))
                     {
                         // 循环播放
                         if (play_index + 1 >= PlayList.Count)
@@ -966,6 +1084,7 @@ namespace TS3AudioBot_Plugin_Netease_QQ
             }
 
             string songurl = "";
+            string mediaMid = "";
             if (music_type == 0)
             {
                 try
@@ -982,9 +1101,9 @@ namespace TS3AudioBot_Plugin_Netease_QQ
             {
                 try
                 {// 获取url
-                    if (detail != null && detail.TryGetValue("mediamid", out string mediamid))
+                    if (detail != null && detail.TryGetValue("mediamid", out mediaMid))
                     {
-                        songurl = await musicapi.GetSongUrl(Songid, music_type, mediamid);
+                        songurl = await musicapi.GetSongUrl(Songid, music_type, mediaMid);
                     }
                     else
                     {
@@ -1098,9 +1217,20 @@ namespace TS3AudioBot_Plugin_Netease_QQ
                         var ar = new AudioResource(native_url, fullName, "media")
                           .Add("PlayUri", picurl)
                           .Add("source", "NeteaseQQPlugin");
+                                                bool isSameSong = currentSongId == Songid && currentMusicType == music_type;
                         // Console.WriteLine($"cover:{picurl}");
                         await playManager.Play(invokerData, new MediaPlayResource(songurl, ar, await musicapi.HttpGetImage(picurl), false));
-                        isPlayingNeteaseOrQQ = true;    
+                                                isPlayingNeteaseOrQQ = true;
+                                                currentSongId = Songid;
+                                                currentMusicType = music_type;
+                                                currentMediaMid = mediaMid;
+                                                currentSongUrl = songurl;
+                                                currentSongUrlFetchedAtUtc = DateTime.UtcNow;
+                                                if (!isSameSong)
+                                                {
+                                                        hasRecoveredCurrentSong = false;
+                                                }
+                                                lastResumeTargetSec = 0;
                         // await MainCommands.CommandPlay(playManager, invokerData, songurl);
                     }
                     catch (Exception ex)
@@ -1617,19 +1747,98 @@ namespace TS3AudioBot_Plugin_Netease_QQ
             long value = 0;
             if (long.TryParse(argments, out value))
             {
-                if (!player.Paused && playManager.IsPlaying)
+                if (playManager.IsPlaying)
                 {
-                    StartLyric(false);
-                    long p_now, p_length;
-                    p_now = (long)((TimeSpan)player.Position).TotalSeconds;
-                    p_length = (long)((TimeSpan)player.Length).TotalSeconds;
-                    if (value < p_length && value >= 0)
+                    long p_length = (long)GetCurrentPlayerLengthSec();
+                    if (value < 0)
                     {
-                        await player.Seek(TimeSpan.FromSeconds(value));
+                        value = 0;
                     }
-                    // 延迟1000防止启动线程的时候seek还没完成
-                    await Task.Delay(1000);
-                    StartLyric(true);
+                    if (p_length > 0 && value > p_length)
+                    {
+                        value = p_length;
+                    }
+
+                    try
+                    {
+                        StartLyric(false);
+                        await player.Seek(TimeSpan.FromSeconds(value));
+                        lastSeekAtUtc = DateTime.UtcNow;
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[NeteaseQQPlugin] Seek失败: {ex.Message}");
+                    }
+
+                    if (!player.Paused)
+                    {
+                        // 延迟防止启动线程的时候seek还没完成
+                        await Task.Delay(250);
+                        StartLyric(true);
+                    }
+                }
+            }
+        }
+        [Command("wq resume")]
+        public async Task CommandResume(string argments, Ts3Client ts3Client)
+        {
+            if (isObstruct)
+            {
+                await ts3Client.SendChannelMessage("正在进行处理，请稍后");
+                return;
+            }
+
+            long resumeSec = (long)Math.Max(0, Math.Floor(GetCurrentPlayerPositionSec()));
+            if (long.TryParse(argments, out long parsedResumeSec))
+            {
+                resumeSec = Math.Max(0, parsedResumeSec);
+            }
+
+            lastResumeAtUtc = DateTime.UtcNow;
+            lastResumeTargetSec = resumeSec;
+            hasRecoveredCurrentSong = false;
+
+            bool shouldRebuildPlayback = !playManager.IsPlaying || IsCurrentSongUrlStale();
+            if (shouldRebuildPlayback)
+            {
+                if (PlayList.Count == 0 || play_index < 0 || play_index >= PlayList.Count)
+                {
+                    await ts3Client.SendChannelMessage("当前没有可恢复的歌曲");
+                    return;
+                }
+
+                Console.WriteLine($"[NeteaseQQPlugin] 执行恢复重建: stale={IsCurrentSongUrlStale()}, seek={resumeSec}s");
+                await PlayListPlayNow();
+                if (resumeSec > 0 && playManager.IsPlaying)
+                {
+                    try
+                    {
+                        await player.Seek(TimeSpan.FromSeconds(resumeSec));
+                        lastSeekAtUtc = DateTime.UtcNow;
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[NeteaseQQPlugin] 恢复后seek失败: {ex.Message}");
+                    }
+                }
+                return;
+            }
+
+            if (player.Paused)
+            {
+                MainCommands.CommandPause(player);
+            }
+
+            if (resumeSec > 0 && playManager.IsPlaying && !player.Paused)
+            {
+                try
+                {
+                    await player.Seek(TimeSpan.FromSeconds(resumeSec));
+                    lastSeekAtUtc = DateTime.UtcNow;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[NeteaseQQPlugin] 恢复seek失败: {ex.Message}");
                 }
             }
         }
@@ -1649,7 +1858,7 @@ namespace TS3AudioBot_Plugin_Netease_QQ
         public async Task CommandMode(int argments, Ts3Client ts3Client)
         {
             if (isObstruct) { await ts3Client.SendChannelMessage("正在进行处理，请稍后"); return; }
-            if (1 <= argments && argments <= 6)
+            if (1 <= argments && argments <= 4)
             {
                 if (play_type == 0)
                 {
@@ -1661,8 +1870,6 @@ namespace TS3AudioBot_Plugin_Netease_QQ
                         case 2: notice = "单曲循环模式"; break;
                         case 3: notice = "顺序循环模式"; break;
                         case 4: notice = "随机播放模式"; break;
-                        case 5: notice = "顺序销毁模式"; break;
-                        case 6: notice = "随机销毁模式"; break;
                         default: break;
                     }
                     await ts3Client.SendChannelMessage(notice);
@@ -1688,9 +1895,26 @@ namespace TS3AudioBot_Plugin_Netease_QQ
             // 展示第page页
             await PlayListShow(page);
         }
+        private static string GetPlayModeName(int mode)
+        {
+            switch (mode)
+            {
+                case 1: return "顺序播放";
+                case 2: return "单曲循环";
+                case 3: return "顺序循环";
+                case 4: return "随机播放";
+                default: return "顺序播放";
+            }
+        }
         [Command("wq json")]
         public Task<string> CommandQueueJson()
         {
+            int normalizedPlayMode = play_mode;
+            if (play_type == 0 && (normalizedPlayMode < 1 || normalizedPlayMode > 4))
+            {
+                normalizedPlayMode = 1;
+            }
+
             var snapshotItems = PlayList.Select((item, index) =>
             {
                 item.TryGetValue("id", out string id);
@@ -1710,11 +1934,20 @@ namespace TS3AudioBot_Plugin_Netease_QQ
             var payload = new
             {
                 playbackIndex = play_index,
+                play_index = play_index + 1,
+                play_mode = normalizedPlayMode,
+                play_type = play_type,
+                mode_name = GetPlayModeName(normalizedPlayMode),
                 songCount = PlayList.Count,
                 items = snapshotItems
             };
 
             return Task.FromResult(JsonSerializer.Serialize(payload));
+        }
+        [Command("wq queue")]
+        public Task<string> CommandQueueAlias()
+        {
+            return CommandQueueJson();
         }
         [Command("wq go")]       
         public async Task CommandGo(Ts3Client ts3Client, int? argments = null)
@@ -1734,29 +1967,24 @@ namespace TS3AudioBot_Plugin_Netease_QQ
                 else
                 {
                     await ts3Client.SendChannelMessage($"超出索引范围, 范围[1,{PlayList.Count}]");
-                }
-            }
-            // --- 情况2: 用户只输入了 "!bgm go" (重播或播放) ---
-            else
-            {
-                // a) 如果有歌曲正在播放，则重播当前歌曲
-                if (playManager.IsPlaying)
-                {
                     await ts3Client.SendChannelMessage($"已跳转到网易/QQ列表第{play_index+1}首歌。");
                     await PlayListPlayNow();
                 }
-                // b) 如果当前没有歌曲播放，但播放列表不为空
-                else if (PlayList.Count > 0)
+            }
+            // b) 如果当前没有歌曲播放，但播放列表不为空
+            else if (PlayList.Count > 0)
+            {
+                await ts3Client.SendChannelMessage("开始播放网易/QQ列表。");
+                if (play_index < 0 || play_index >= PlayList.Count)
                 {
-                    await ts3Client.SendChannelMessage("开始播放网易/QQ列表。");
                     play_index = 0; // 从第一首开始
-                    await PlayListPlayNow();
                 }
-                // c) 如果播放列表是空的
-                else
-                {
-                    await ts3Client.SendChannelMessage("播放列表是空的，没有可以播放的歌曲。");
-                }
+                await PlayListPlayNow();
+            }
+            // c) 如果播放列表是空的
+            else
+            {
+                await ts3Client.SendChannelMessage("播放列表是空的，没有可以播放的歌曲。");
             }
         }
         [Command("wq move")]
@@ -1877,6 +2105,7 @@ namespace TS3AudioBot_Plugin_Netease_QQ
             }
             // 在这里重置标志位
             isPlayingNeteaseOrQQ = false;
+            ResetPlaybackRecoveryState();
            
             if (botname_connect_before != botname_connect)
             {
@@ -2713,6 +2942,22 @@ namespace TS3AudioBot_Plugin_Netease_QQ
                 return;
             }
 
+            double positionSec = GetCurrentPlayerPositionSec();
+            double lengthSec = GetCurrentPlayerLengthSec();
+            bool naturalStop = IsLikelyNaturalStop();
+            double resumeAgoSec = lastResumeAtUtc == DateTime.MinValue ? -1 : (DateTime.UtcNow - lastResumeAtUtc).TotalSeconds;
+
+            Console.WriteLine($"[NeteaseQQPlugin] PlaybackStopped pos={positionSec:F1}s len={lengthSec:F1}s natural={naturalStop} resumeAgo={resumeAgoSec:F1}s urlStale={IsCurrentSongUrlStale()} recovered={hasRecoveredCurrentSong}");
+
+            if (!naturalStop)
+            {
+                bool recovered = await TryRecoverCurrentSongAsync();
+                if (recovered)
+                {
+                    return;
+                }
+            }
+
             if (play_type == 0 && play_mode == 2)
             {
                 // 单曲循环
@@ -2732,6 +2977,7 @@ namespace TS3AudioBot_Plugin_Netease_QQ
             if (value.ResourceData?.Get("source") != "NeteaseQQPlugin")
             {
                 isPlayingNeteaseOrQQ = false;
+                ResetPlaybackRecoveryState();
                 // （可选）你可以在这里加一条日志，方便调试
                 // Console.WriteLine("NeteaseQQPlugin:我没在干.");
             }
@@ -2793,6 +3039,7 @@ namespace TS3AudioBot_Plugin_Netease_QQ
             playManager.PlaybackStopped -= OnSongStop;
             ts3Client.OnAloneChanged -= OnAlone;
             playManager.AfterResourceStarted -= AfterSongStart;
+            ResetPlaybackRecoveryState();
             if (isLyric == true)
             {
                 isLyric = false;

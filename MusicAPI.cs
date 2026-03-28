@@ -1450,7 +1450,10 @@ namespace MusicAPI
         //--------------------------HTTP相关--------------------------
         public static async Task<string> HttpGetAsync(string url)
         {
-            using HttpClient client = new HttpClient();
+            using HttpClient client = new HttpClient
+            {
+                Timeout = TimeSpan.FromSeconds(30)
+            };
             try
             {
                 // 发送GET请求
@@ -1461,9 +1464,13 @@ namespace MusicAPI
                 string responseBody = await res.Content.ReadAsStringAsync();
                 return responseBody;
             }
-            catch (HttpRequestException e)
+            catch (TaskCanceledException ex)
             {
-                throw e;
+                throw new TimeoutException($"HTTP请求超时: {url}", ex);
+            }
+            catch (HttpRequestException)
+            {
+                throw;
             }
         }
         public async Task<string> HttpGetWithCookiesAsync(string url, int type_music)
@@ -1504,6 +1511,7 @@ namespace MusicAPI
 
                 using (var client = new HttpClient(handler))
                 {
+                    client.Timeout = TimeSpan.FromSeconds(30);
                     client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36");
 
                     try
@@ -1514,13 +1522,17 @@ namespace MusicAPI
                         // Console.WriteLine($"Sent cookies: {string.Join(", ", cookies.Cast<Cookie>().Select(c => $"{c.Name}={c.Value}"))}");
                         return await response.Content.ReadAsStringAsync();
                     }
-                    catch (HttpRequestException e)
+                    catch (TaskCanceledException ex)
                     {
-                        throw e;
+                        throw new TimeoutException($"HTTP请求超时: {url}", ex);
                     }
-                    catch (Exception ex)
+                    catch (HttpRequestException)
                     {
-                        throw ex;
+                        throw;
+                    }
+                    catch (Exception)
+                    {
+                        throw;
                     }
                 }
             }
