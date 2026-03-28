@@ -1,4 +1,4 @@
-﻿using Newtonsoft.Json;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
@@ -36,14 +36,23 @@ namespace MusicAPI
         public string qrsig;
 
         // 报错信息文本
-        private static string error_http_error = "http请求发生错误";
-        private static string error_json_error = "Json解析错误，是否部署了正确api，是否登录";
-        // private static string error_error_no_detail = "获取歌曲信息失败，请检查";
-        // private static string error_no_url = "获取歌曲URL失败，检查是否登录";
-
+        private static string error_http_error = "HTTP请求发生错误";
+        private static string error_json_error = "JSON解析错误";
+        
         // 重试参数
-        private static int maxtry = 2;
-        private static int trydelay = 1000;
+        private static int maxtry = 3;
+        private static int trydelay = 1500;
+        
+        // 日志记录
+        private void LogError(string message, Exception ex = null)
+        {
+            Console.WriteLine($"[MusicAPI Error] {message}");
+            if (ex != null)
+            {
+                Console.WriteLine($"[MusicAPI Exception] {ex.Message}");
+                Console.WriteLine($"[MusicAPI StackTrace] {ex.StackTrace}");
+            }
+        }
 
         //--------------------------参数设置--------------------------
         public void SetCookies(string cookies, int type_music)
@@ -707,9 +716,9 @@ namespace MusicAPI
             }
             return null;
         }
-        public async Task<List<Dictionary<TimeSpan, string>>> GetSongLyric(string Song_id, int type_music)
+        public async Task<List<Dictionary<TimeSpan, Tuple<string, string>>>> GetSongLyric(string Song_id, int type_music)
         {
-            List<Dictionary<TimeSpan, string>>  lyric = new List<Dictionary<TimeSpan, string>>();
+            List<Dictionary<TimeSpan, Tuple<string, string>>> lyric = new List<Dictionary<TimeSpan, Tuple<string, string>>>();
             if (type_music == 0)
             {
                 for (int trytime = 0; trytime < maxtry; trytime++)
@@ -735,47 +744,78 @@ namespace MusicAPI
                     // 解析数据
                     try
                     {
-                        string lyric_all;
-                        /*
-                        if (jsonObject["tlyric"]["lyric"].ToString() != "")
-                        {// 若有翻译获取翻译
-                            lyric_all = jsonObject["tlyric"]["lyric"].ToString();
-                        }
-                        else
+                        // 解析主歌词和翻译歌词
+                        var mainLyricData = jsonObject["lrc"]?["lyric"]?.ToString() ?? "";
+                        var transLyricData = jsonObject["tlyric"]?["lyric"]?.ToString() ?? "";
+                        
+                        // 解析主歌词
+                        Dictionary<TimeSpan, string> mainLyrics = new Dictionary<TimeSpan, string>();
+                        if (!string.IsNullOrEmpty(mainLyricData))
                         {
-                            lyric_all = jsonObject["lrc"]["lyric"].ToString();
-                        }
-                        */
-                        lyric_all = jsonObject["lrc"]["lyric"].ToString();
-                        // 格式转化
-                        string[] lines = lyric_all.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
-                        foreach (var line in lines)
-                        {
-                            int closingBracketIndex = line.IndexOf(']');
-                            if (closingBracketIndex <= 0) continue;
+                            string[] mainLines = mainLyricData.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                            foreach (var line in mainLines)
+                            {
+                                int closingBracketIndex = line.IndexOf(']');
+                                if (closingBracketIndex <= 0) continue;
 
-                            string timePart = line.Substring(1, closingBracketIndex - 1);
-                            string lyric_single = line.Substring(closingBracketIndex + 1).Trim();
+                                string timePart = line.Substring(1, closingBracketIndex - 1);
+                                string lyricSingle = line.Substring(closingBracketIndex + 1).Trim();
 
-                            if (string.IsNullOrWhiteSpace(lyric_single)) continue;
-                            // 解析
-                            string[] timeFormats = new string[]
-                            {
-                                @"mm\:ss\.fff", // [11.11.111]
-                                @"mm\:ss\.ff",  // [11.11.11]
-                                @"mm\:ss\.f"    // [11.11.1]
-                            };
-                            if (TimeSpan.TryParseExact(timePart, timeFormats, CultureInfo.InvariantCulture, out TimeSpan timestamp))
-                            {
-                                var lyricEntry = new Dictionary<TimeSpan, string>();
-                                lyricEntry.Add(timestamp, lyric_single);
-                                lyric.Add(lyricEntry);
-                            }
-                            else
-                            {
-                                Console.WriteLine($"无法解析时间格式: {timePart}");
+                                if (string.IsNullOrWhiteSpace(lyricSingle)) continue;
+                                
+                                string[] timeFormats = new string[]
+                                {
+                                    @"mm\:ss\.fff", // [11.11.111]
+                                    @"mm\:ss\.ff",  // [11.11.11]
+                                    @"mm\:ss\.f"    // [11.11.1]
+                                };
+                                if (TimeSpan.TryParseExact(timePart, timeFormats, CultureInfo.InvariantCulture, out TimeSpan timestamp))
+                                {
+                                    mainLyrics[timestamp] = lyricSingle;
+                                }
                             }
                         }
+                        
+                        // 解析翻译歌词
+                        Dictionary<TimeSpan, string> transLyrics = new Dictionary<TimeSpan, string>();
+                        if (!string.IsNullOrEmpty(transLyricData))
+                        {
+                            string[] transLines = transLyricData.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                            foreach (var line in transLines)
+                            {
+                                int closingBracketIndex = line.IndexOf(']');
+                                if (closingBracketIndex <= 0) continue;
+
+                                string timePart = line.Substring(1, closingBracketIndex - 1);
+                                string lyricSingle = line.Substring(closingBracketIndex + 1).Trim();
+
+                                if (string.IsNullOrWhiteSpace(lyricSingle)) continue;
+                                
+                                string[] timeFormats = new string[]
+                                {
+                                    @"mm\:ss\.fff", // [11.11.111]
+                                    @"mm\:ss\.ff",  // [11.11.11]
+                                    @"mm\:ss\.f"    // [11.11.1]
+                                };
+                                if (TimeSpan.TryParseExact(timePart, timeFormats, CultureInfo.InvariantCulture, out TimeSpan timestamp))
+                                {
+                                    transLyrics[timestamp] = lyricSingle;
+                                }
+                            }
+                        }
+                        
+                        // 合并主歌词和翻译歌词
+                        foreach (var mainLyric in mainLyrics)
+                        {
+                            TimeSpan timestamp = mainLyric.Key;
+                            string mainText = mainLyric.Value;
+                            string transText = transLyrics.ContainsKey(timestamp) ? transLyrics[timestamp] : "";
+                            
+                            var lyricEntry = new Dictionary<TimeSpan, Tuple<string, string>>();
+                            lyricEntry.Add(timestamp, new Tuple<string, string>(mainText, transText));
+                            lyric.Add(lyricEntry);
+                        }
+                        
                         return lyric;
                     }
                     catch (Exception)
@@ -806,21 +846,19 @@ namespace MusicAPI
                     // 解析数据
                     try
                     {
-                        string lyric_all;
-                        /*
-                        if (jsonObject["data"]["trans"].ToString() != "")
-                        {// 若有翻译获取翻译
-                            lyric_all = jsonObject["data"]["trans"].ToString();
-                        }
-                        else
+                        // 解析主歌词和翻译歌词
+                        string mainLyricData = jsonObject["data"]["lyric"].ToString();
+                        string transLyricData = "";
+                        var dataObject = jsonObject["data"] as JObject;
+                        if (dataObject != null && dataObject.ContainsKey("trans"))
                         {
-                            lyric_all = jsonObject["data"]["lyric"].ToString();
+                            transLyricData = dataObject["trans"].ToString();
                         }
-                        */
-                        lyric_all = jsonObject["data"]["lyric"].ToString();
-                        // 格式转化
-                        string[] lines = lyric_all.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
-                        foreach (string line in lines)
+                        
+                        // 解析主歌词
+                        Dictionary<TimeSpan, string> mainLyrics = new Dictionary<TimeSpan, string>();
+                        string[] mainLines = mainLyricData.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                        foreach (string line in mainLines)
                         {
                             Match match = Regex.Match(line, @"^\[(\d{2}:\d{2}\.\d{1,3})\](.*)$");
                             if (match.Success)
@@ -835,12 +873,49 @@ namespace MusicAPI
                                 };
                                 if (TimeSpan.TryParseExact(timeStr, timeFormats, CultureInfo.InvariantCulture, out TimeSpan time))
                                 {
-                                    Dictionary<TimeSpan, string> entry = new Dictionary<TimeSpan, string>();
-                                    entry.Add(time, lyric_single);
-                                    lyric.Add(entry);
+                                    mainLyrics[time] = lyric_single;
                                 }
                             }
                         }
+                        
+                        // 解析翻译歌词
+                        Dictionary<TimeSpan, string> transLyrics = new Dictionary<TimeSpan, string>();
+                        if (!string.IsNullOrEmpty(transLyricData))
+                        {
+                            string[] transLines = transLyricData.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                            foreach (string line in transLines)
+                            {
+                                Match match = Regex.Match(line, @"^\[(\d{2}:\d{2}\.\d{1,3})\](.*)$");
+                                if (match.Success)
+                                {
+                                    string timeStr = match.Groups[1].Value;
+                                    string lyric_single = match.Groups[2].Value.Trim();
+                                    string[] timeFormats = new string[]
+                                    {
+                                        @"mm\:ss\.fff", // [11.11.111]
+                                        @"mm\:ss\.ff",  // [11.11.11]
+                                        @"mm\:ss\.f"    // [11.11.1]
+                                    };
+                                    if (TimeSpan.TryParseExact(timeStr, timeFormats, CultureInfo.InvariantCulture, out TimeSpan time))
+                                    {
+                                        transLyrics[time] = lyric_single;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // 合并主歌词和翻译歌词
+                        foreach (var mainLyric in mainLyrics)
+                        {
+                            TimeSpan timestamp = mainLyric.Key;
+                            string mainText = mainLyric.Value;
+                            string transText = transLyrics.ContainsKey(timestamp) ? transLyrics[timestamp] : "";
+                            
+                            var lyricEntry = new Dictionary<TimeSpan, Tuple<string, string>>();
+                            lyricEntry.Add(timestamp, new Tuple<string, string>(mainText, transText));
+                            lyric.Add(lyricEntry);
+                        }
+                        
                         return lyric;
                     }
                     catch (Exception)
@@ -1375,7 +1450,10 @@ namespace MusicAPI
         //--------------------------HTTP相关--------------------------
         public static async Task<string> HttpGetAsync(string url)
         {
-            using HttpClient client = new HttpClient();
+            using HttpClient client = new HttpClient
+            {
+                Timeout = TimeSpan.FromSeconds(30)
+            };
             try
             {
                 // 发送GET请求
@@ -1386,9 +1464,13 @@ namespace MusicAPI
                 string responseBody = await res.Content.ReadAsStringAsync();
                 return responseBody;
             }
-            catch (HttpRequestException e)
+            catch (TaskCanceledException ex)
             {
-                throw e;
+                throw new TimeoutException($"HTTP请求超时: {url}", ex);
+            }
+            catch (HttpRequestException)
+            {
+                throw;
             }
         }
         public async Task<string> HttpGetWithCookiesAsync(string url, int type_music)
@@ -1429,6 +1511,7 @@ namespace MusicAPI
 
                 using (var client = new HttpClient(handler))
                 {
+                    client.Timeout = TimeSpan.FromSeconds(30);
                     client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36");
 
                     try
@@ -1439,13 +1522,17 @@ namespace MusicAPI
                         // Console.WriteLine($"Sent cookies: {string.Join(", ", cookies.Cast<Cookie>().Select(c => $"{c.Name}={c.Value}"))}");
                         return await response.Content.ReadAsStringAsync();
                     }
-                    catch (HttpRequestException e)
+                    catch (TaskCanceledException ex)
                     {
-                        throw e;
+                        throw new TimeoutException($"HTTP请求超时: {url}", ex);
                     }
-                    catch (Exception ex)
+                    catch (HttpRequestException)
                     {
-                        throw ex;
+                        throw;
+                    }
+                    catch (Exception)
+                    {
+                        throw;
                     }
                 }
             }
@@ -1477,22 +1564,37 @@ namespace MusicAPI
         }
         public async Task<byte[]> HttpGetImage(string url)
         {
-            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
-            request.Method = "GET";
+            if (string.IsNullOrEmpty(url))
+            {
+                return null;
+            }
+            
+            try
+            {
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+                request.Method = "GET";
 
-            // 关键：在这里添加 User-Agent，伪装成浏览器
-            request.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36";
+                // 关键：在这里添加 User-Agent，伪装成浏览器
+                request.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36";
 
-            // 确保 using 语句能够正确处理可能发生的异常
-           
                 using (HttpWebResponse response = (HttpWebResponse)await request.GetResponseAsync())
                 using (Stream stream = response.GetResponseStream())
                 using (MemoryStream memoryStream = new MemoryStream())
                 {
+                    if (stream == null)
+                    {
+                        return null;
+                    }
                     await stream.CopyToAsync(memoryStream);
                     return memoryStream.ToArray();
                 }
-           }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DEBUG] HttpGetImage 失败: {ex.Message}, url: {url}");
+                return null;
+            }
+        }
         //--------------------------其他功能性--------------------------
         public static string GetTimeStamp()
         {

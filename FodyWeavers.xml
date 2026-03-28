@@ -1,15 +1,13 @@
-﻿<Weavers xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="FodyWeavers.xsd">
+<Weavers xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="FodyWeavers.xsd">
 	<Costura>
 		<IncludeAssemblies>
 			SixLabors.ImageSharp
-
+			Newtonsoft.Json
 			System.Runtime.CompilerServices.Unsafe
 			System.Numerics.Vectors
 			System.Buffers
 			System.Memory
-
 			INIFileParser
-
 		</IncludeAssemblies>
 	</Costura>
 </Weavers>
